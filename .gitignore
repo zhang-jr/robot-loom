@@ -1,0 +1,100 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+.Python
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+wheels/
+
+# uv / pip
+.venv/
+venv/
+env/
+.env
+*.env.local
+
+# pyproject build artifacts
+*.whl
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+
+# mypy / pyright / ruff
+.mypy_cache/
+.ruff_cache/
+.pyright/
+pyrightconfig.json
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Docker
+docker-compose.override.yml
+
+# Logs & traces
+logs/
+*.log
+*.jsonl
+
+# OpenTelemetry / Prometheus local artifacts
+otel-collector-config.yaml
+prometheus-data/
+
+# Model weights / checkpoints (never commit)
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+*.onnx
+*.tflite
+
+# Data & episode buffers
+data/raw/
+data/processed/
+episode_buffers/
+
+# Benchmark results
+benchmarks/results/
+BENCHMARKS.md
+
+# User workspace (kept at ~/.robot_harness/workspace/)
+workspace/
+
+# Secrets / credentials
+*.pem
+*.key
+*.crt
+secrets/
+.secrets/
+
+# Temporary
+tmp/
+temp/
+*.tmp
+*.bak
+*.swp
