@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "robot-harness"
+name = "robot-loom"
 version = "0.1.0"
 description = "Model- and embodiment-agnostic robot agent orchestration harness"
 readme = "README.md"
@@ -31,7 +31,7 @@ dev = [
 ]
 
 [project.scripts]
-robot-harness = "robot_harness.cli:main"
+robot-loom = "robot_harness.cli:main"
 
 # ---------------------------------------------------------------------------
 # Ruff

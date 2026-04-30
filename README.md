@@ -1,4 +1,4 @@
-# Robot Agent Harness
+# Robot Loom
 
 **Model- and embodiment-agnostic orchestration layer for LLM/VLM-driven robot agents.**
 
@@ -8,7 +8,7 @@ The Brain doesn't touch the hardware — it drives everything through tool calls
 
 ## What is it?
 
-Robot Agent Harness is the glue layer between an LLM/VLM planning brain and the fleet of capability servers that make a robot actually do things: perception, grasping, navigation, memory, progress evaluation, motion execution.
+Robot Loom is the glue layer between an LLM/VLM planning brain and the fleet of capability servers that make a robot actually do things: perception, grasping, navigation, memory, progress evaluation, motion execution.
 
 In practice, every robot AI team re-builds the same scaffolding: client adapters, tool schema validation, safety envelopes, skill orchestration, multi-robot coordination. The protocols are incompatible and the capabilities don't travel across platforms. This project extracts that layer so capabilities are independently replaceable, versioned, and reusable across robot form factors.
 
@@ -154,8 +154,8 @@ powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 ### Install
 
 ```bash
-git clone https://github.com/<org>/robot-harness.git
-cd robot-harness
+git clone https://github.com/<org>/robot-loom.git
+cd robot-loom
 
 # Create virtual environment and install all dependencies (including dev extras)
 uv sync --extra dev
@@ -169,8 +169,8 @@ uv run python -c "import robot_harness; print('ok')"
 Framework code and user assets are kept strictly separate. Your robot configs, custom skills, and private prompts live outside the repo:
 
 ```bash
-uv run robot-harness init
-# Creates ~/.robot_harness/workspace/ from the workspace_template/
+uv run robot-loom init
+# Creates ~/.robot-loom/workspace/ from the workspace_template/
 ```
 
 ### Run tests
@@ -200,7 +200,7 @@ uv run pre-commit install
 ## Project structure
 
 ```
-robot-harness/
+robot-loom/
 ├── robot_harness/           # framework code (no user assets here)
 │   ├── brain/               # LLM/VLM planning layer
 │   ├── tools/               # ★ first-class abstraction ★
@@ -228,7 +228,7 @@ robot-harness/
 │   ├── config/              # config loader + schema + paths
 │   └── errors.py            # unified exception hierarchy
 │
-├── workspace_template/      # copied to ~/.robot_harness/workspace/ on init
+├── workspace_template/      # copied to ~/.robot-loom/workspace/ on init
 │   ├── MISSION.md
 │   ├── ROBOT.md
 │   ├── HEARTBEAT.md

@@ -46,8 +46,8 @@ tools/utils/yolo.py                 ❌ utils 是垃圾桶
 | 类型 | 放在 |
 |---|---|
 | 框架逻辑 | `robot_harness/` |
-| 用户自定义 skill / tool | `~/.robot_harness/workspace/skills/` |
-| Robot 配置 / 私有 prompt | `~/.robot_harness/workspace/` |
+| 用户自定义 skill / tool | `~/.robot-loom/workspace/skills/` |
+| Robot 配置 / 私有 prompt | `~/.robot-loom/workspace/` |
 
 **禁止**把用户资产放进 `robot_harness/` 源码目录。
 

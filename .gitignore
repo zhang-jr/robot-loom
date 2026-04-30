@@ -82,7 +82,7 @@ episode_buffers/
 benchmarks/results/
 BENCHMARKS.md
 
-# User workspace (kept at ~/.robot_harness/workspace/)
+# User workspace (kept at ~/.robot-loom/workspace/)
 workspace/
 
 # Secrets / credentials

@@ -1,6 +1,6 @@
 # 新成员入门指南
 
-> 欢迎加入 Robot Agent Harness 项目！
+> 欢迎加入 Robot Loom 项目！
 > 本文档帮助你在 30 分钟内搭好环境、理解项目结构、提交第一个 PR。
 >
 > 贡献规范 → `docs/contributing.md`
@@ -9,7 +9,7 @@
 
 ## 项目是什么
 
-**Robot Agent Harness** 是一个模型/形态无关的 LLM/VLM 机器人编排框架。
+**Robot Loom** 是一个模型/形态无关的 LLM/VLM 机器人编排框架。
 
 核心思路：LLM（Brain）通过 tool calling 驱动感知、抓取、记忆、导航等外部能力，harness 负责统一管理 tool 注册、skill 编排、安全校验和多机器人协调。
 
@@ -54,8 +54,8 @@ powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 ### 克隆与安装
 
 ```bash
-git clone https://github.com/<org>/robot_harness.git
-cd robot_harness
+git clone https://github.com/<org>/robot-loom.git
+cd robot-loom
 
 # 创建虚拟环境 + 安装依赖（含 dev extras）
 uv sync --extra dev
@@ -70,9 +70,9 @@ uv run python -c "import robot_harness; print('ok')"
 
 ```bash
 # 创建个人 workspace（存放 robot 配置、自定义 skill 等）
-uv run robot-harness init
+uv run robot-loom init
 
-# workspace 默认路径：~/.robot_harness/workspace/
+# workspace 默认路径：~/.robot-loom/workspace/
 # 包含：MISSION.md / ROBOT.md / HEARTBEAT.md / tools/ / skills/
 ```
 
@@ -94,7 +94,7 @@ uv run pytest tests/hardware/ -m hardware
 ## 目录结构速览
 
 ```
-robot-harness/
+robot-loom/
 ├── robot_harness/          # 框架代码（不放用户资产）
 │   ├── brain/              # LLM 规划层
 │   ├── tools/              # ★ 核心 ★ Tool 抽象 + 各类 adapter
@@ -152,7 +152,7 @@ robot-harness/
 设计决策（ADR-001）：重模型推理外置为独立 server，本仓库只实现 client adapter。`tools/<category>/` 里的文件是 adapter，不是模型本身。
 
 **Q：我的 skill / tool 配置应该放哪？**
-放 `~/.robot_harness/workspace/`，不要放进 `robot_harness/` 源码目录（ADR-015）。
+放 `~/.robot-loom/workspace/`，不要放进 `robot_harness/` 源码目录（ADR-015）。
 
 **Q：能跳过 SafetyEnvelope 测试吗？**
 不能。SafetyEnvelope 测试禁止 mock，必须用真实校验逻辑。
@@ -167,4 +167,3 @@ robot-harness/
 - GitHub Issues：报 bug、提问、讨论设计
 - GitHub Discussions：较长的技术讨论
 - 找不到任务： 找对应 Phase → 找小组负责人
-
