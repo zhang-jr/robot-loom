@@ -27,6 +27,7 @@ dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",
     "ruff>=0.5.0",
+    "mypy>=1.10.0",
     "pre-commit>=3.7.0",
 ]
 
@@ -78,6 +79,75 @@ force-sort-within-sections = false
 quote-style = "double"
 indent-style = "space"
 docstring-code-format = true
+
+# ---------------------------------------------------------------------------
+# Pytest
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Mypy
+# ---------------------------------------------------------------------------
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "robot_harness"
+
+# --- strict mode flags (equivalent to --strict) ---
+strict = true
+
+# --- extra strictness beyond --strict ---
+warn_unreachable = true
+warn_unused_ignores = true
+warn_return_any = true
+disallow_any_unimported = true
+disallow_any_expr = false          # too noisy for Protocol-heavy code
+disallow_any_decorated = false     # LiteLLM / OTel decorators use Any internally
+disallow_any_explicit = false      # allows explicit Any for adapter escape hatches
+enable_error_codes = [
+    "redundant-expr",
+    "possibly-undefined",
+    "truthy-iterable",
+    "ignore-without-code",
+    "unused-awaitable",
+    "explicit-override",
+]
+
+# --- import handling ---
+# Each third-party stub package should be listed here when stubs are available.
+# Unknown imports are silently ignored per module below.
+follow_imports = "normal"
+follow_imports_for_stubs = true
+
+# --- reporting ---
+show_error_codes = true
+show_column_numbers = true
+pretty = true
+error_summary = true
+
+# --- per-module overrides ---
+[[tool.mypy.overrides]]
+# Third-party packages without stubs
+module = [
+    "litellm.*",
+    "mcp.*",
+    "msgpack.*",
+    "prometheus_client.*",
+    "opentelemetry.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Tests: relax some strict checks for fixtures / broad catches
+module = ["tests.*"]
+disallow_untyped_defs = true
+disallow_any_generics = false
+warn_return_any = false
+
+[[tool.mypy.overrides]]
+# Examples: allow untyped defs for runnable scripts
+module = ["examples.*"]
+disallow_untyped_defs = false
+warn_return_any = false
 
 # ---------------------------------------------------------------------------
 # Pytest
