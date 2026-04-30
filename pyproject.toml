@@ -77,6 +77,9 @@ force-sort-within-sections = false
 "examples/**/*.py" = [
     "T201",    # print() allowed in runnable examples
 ]
+"robot_harness/tools/generic/fs.py" = [
+    "ASYNC240",  # sync pathlib in async is intentional: no trio/anyio dep
+]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -106,15 +109,6 @@ disallow_any_unimported = true
 disallow_any_expr = false          # too noisy for Protocol-heavy code
 disallow_any_decorated = false     # LiteLLM / OTel decorators use Any internally
 disallow_any_explicit = false      # allows explicit Any for adapter escape hatches
-enable_error_codes = [
-    "redundant-expr",
-    "possibly-undefined",
-    "truthy-iterable",
-    "ignore-without-code",
-    "unused-awaitable",
-    "explicit-override",
-]
-
 # --- import handling ---
 # Each third-party stub package should be listed here when stubs are available.
 # Unknown imports are silently ignored per module below.
@@ -136,6 +130,7 @@ module = [
     "msgpack.*",
     "prometheus_client.*",
     "opentelemetry.*",
+    "yaml",
 ]
 ignore_missing_imports = true
 
