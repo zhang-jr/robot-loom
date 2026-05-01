@@ -63,6 +63,7 @@ select = [
 ignore = [
     "E501",   # line too long — enforced by formatter, not linter
     "B008",   # function calls in default argument — common in FastAPI-style patterns
+    "ASYNC240", # pathlib in async is fine for asyncio — trio/anyio not used
 ]
 
 [tool.ruff.lint.isort]
