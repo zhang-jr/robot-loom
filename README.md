@@ -1,5 +1,9 @@
 # Robot Loom
 
+<p align="center">
+  <img src="assets/banner.png" alt="Robot Loom" width="100%" />
+</p>
+
 **Model- and embodiment-agnostic orchestration layer for LLM/VLM-driven robot agents.**
 
 The Brain doesn't touch the hardware — it drives everything through tool calls.
@@ -22,45 +26,9 @@ In practice, every robot AI team re-builds the same scaffolding: client adapters
 
 ## Architecture
 
-```
-User Input
-    │
-    ▼
-┌──────────────────────────────────────────────────────┐
-│  Channel  (CLI / Web / Telegram / Discord / Feishu)  │
-└──────────────────────────────────────────────────────┘
-    │
-    ▼
-┌──────────────────────────────────────────────────────┐
-│  Harness Core                                        │
-│    ├─ AgentLoop      (Brain ⇄ tool calling main loop) │
-│    ├─ ToolRegistry   ← first-class abstraction        │
-│    ├─ SkillRegistry  (tool compositions + versioning) │
-│    ├─ Memory         (cross-session persistence)      │
-│    ├─ Critic         (progress supervisor)            │
-│    ├─ SafetyEnvelope (pre-flight check, < 5 ms)       │
-│    └─ Scheduler      (heartbeat / cron)               │
-└──────────────────────────────────────────────────────┘
-    │
-    ▼
-┌──────────────────────────────────────────────────────┐
-│  Tool Adapters  (client only — servers are external) │
-│    ├─ perception/   → YOLO / Depth / SAM / G-DINO    │
-│    ├─ grasp/        → GraspAnything / AnyGrasp        │
-│    ├─ memory/       → SpatialMemory-like server       │
-│    ├─ critic/       → VLA-based progress critic       │
-│    ├─ vla/          → VLA serving runtime             │
-│    ├─ navigation/   → VLN / nav planner               │
-│    ├─ robot_sdk/    → per-robot agent server          │
-│    └─ generic/      → shell / fs / web / messaging   │
-└──────────────────────────────────────────────────────┘
-    │
-    ▼
-┌──────────────────────────────────────────────────────┐
-│  External Servers / Hardware  (independently deployed)│
-│    GPU inference services · robot hardware · simulators│
-└──────────────────────────────────────────────────────┘
-```
+<p align="center">
+  <img src="assets/arc.png" alt="Architecture" width="100%" />
+</p>
 
 ### Layer table
 
