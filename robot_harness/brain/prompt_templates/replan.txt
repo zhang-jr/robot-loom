@@ -1,0 +1,13 @@
+Replanning required.
+
+Critic verdict: {critic_state} (confidence={critic_confidence})
+Evidence: {critic_evidence}
+
+Execution history:
+{history}
+
+Instructions:
+- Do NOT repeat the exact same failed action.
+- Consider alternative tool sequences or approaches.
+- If the failure is unrecoverable, call give_up with a clear explanation.
+- If critic confidence is low, start with a fresh perception step to re-assess the scene.
