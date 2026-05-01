@@ -1,0 +1,14 @@
+Task: {task_description}
+Robot: {robot_id}
+Constraints: {constraints}
+
+Memory context:
+{memory_context}
+
+Instructions:
+1. Identify what the task requires.
+2. Call the first tool required (typically perception to assess the scene).
+3. Proceed step-by-step based on tool results.
+
+Use the minimum number of tool calls needed.
+Preferred sequence: perceive → estimate → act → verify.

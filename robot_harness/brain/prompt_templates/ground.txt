@@ -1,0 +1,12 @@
+Ground the following goal to concrete tool calls using retrieved memory.
+
+Goal: {goal}
+
+Retrieved memory:
+{memory_hits}
+
+Instructions:
+- Use memory context to inform object locations, past attempts, and known constraints.
+- Output a concrete sequence of tool calls that achieves the goal.
+- If memory contains conflicting records, prefer the most recent entry.
+- If memory is empty or insufficient, start with perception tools to gather fresh context.
