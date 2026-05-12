@@ -36,6 +36,11 @@ jobs:
       - name: mypy
         run: uv run mypy robot_harness
 
+      - name: File hygiene (yaml/toml syntax, whitespace, merge-conflict markers)
+        env:
+          SKIP: ruff,ruff-format,mypy
+        run: uv run pre-commit run --all-files --show-diff-on-failure
+
   test:
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
