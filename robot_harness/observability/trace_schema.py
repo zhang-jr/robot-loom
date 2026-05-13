@@ -50,6 +50,11 @@ class AgentTurnTrace(BaseModel):
     outcome: Literal["success", "failure", "give_up", "in_progress"] = "in_progress"
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
+    # Cognitive scaffold trail (ADR-018): plan/reflection store snapshots per turn.
+    # Kept on a separate channel from physical episode data to avoid polluting
+    # the VLA training schema with LLM meta-cognition artifacts.
+    cognitive_scaffold_trail: list[dict[str, Any]] = Field(default_factory=list)
+
 
 class EpisodeRecord(BaseModel):
     """One full task episode — root record for data backflow."""

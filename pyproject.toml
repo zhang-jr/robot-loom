@@ -63,7 +63,8 @@ select = [
 ignore = [
     "E501",   # line too long — enforced by formatter, not linter
     "B008",   # function calls in default argument — common in FastAPI-style patterns
-    "ASYNC240", # pathlib in async is fine for asyncio — trio/anyio not used
+    # ASYNC240 removed: pre-commit pins ruff v0.5.0 which does not recognise this selector.
+    # Re-add when ruff in pre-commit-config is bumped past the version that introduced ASYNC240.
 ]
 
 [tool.ruff.lint.isort]
@@ -77,6 +78,15 @@ force-sort-within-sections = false
 ]
 "examples/**/*.py" = [
     "T201",    # print() allowed in runnable examples
+]
+"robot_harness/skill/manifest_validator.py" = [
+    "T201",    # CLI tool — print() to stdout/stderr is intentional
+]
+"robot_harness/channels/cli.py" = [
+    "T201",    # CLI channel writes to stdout/stderr by design
+]
+"robot_harness/observability/metrics.py" = [
+    "T201",    # startup banner printed to stderr is intentional
 ]
 "robot_harness/tools/generic/fs.py" = []
 
