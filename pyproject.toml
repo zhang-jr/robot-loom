@@ -29,7 +29,7 @@ dependencies = [
 dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",
-    "ruff>=0.5.0",
+    "ruff>=0.15.12",
     "mypy>=1.10.0",
     "pre-commit>=3.7.0",
 ]
@@ -63,8 +63,6 @@ select = [
 ignore = [
     "E501",   # line too long — enforced by formatter, not linter
     "B008",   # function calls in default argument — common in FastAPI-style patterns
-    # ASYNC240 removed: pre-commit pins ruff v0.5.0 which does not recognise this selector.
-    # Re-add when ruff in pre-commit-config is bumped past the version that introduced ASYNC240.
 ]
 
 [tool.ruff.lint.isort]
