@@ -1,0 +1,20 @@
+# Never commit secrets.
+.env
+.env.local
+*.secret
+
+# Local logs / traces / audit
+logs/
+*.log
+*.jsonl
+audit/
+
+# Episode buffers / cached frames
+episode_buffers/
+cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
