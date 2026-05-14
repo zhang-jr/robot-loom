@@ -1,0 +1,56 @@
+# Robot Loom workspace configuration.
+#
+# This file is copied to ~/.robot-loom/workspace/config.yaml by `robot-loom init`.
+# Edit it to point at your Brain model, fleet, and safety envelope.
+#
+# Secrets (API keys, tokens) MUST live in `.env`, NOT here.
+# This file is meant to be tracked in git; `.env` is not.
+
+# ---------------------------------------------------------------------------
+# Brain — LLM/VLM backend used for planning and tool calling.
+# `model` is any LiteLLM-compatible string:
+#   openai/gpt-4o            (needs OPENAI_API_KEY)
+#   anthropic/claude-sonnet-4-6
+#                            (needs ANTHROPIC_API_KEY)
+#   ollama/qwen2.5:14b       (needs OLLAMA_API_BASE, default http://localhost:11434)
+#   hosted_vllm/<model>      (needs api_base pointing at your vLLM server)
+# ---------------------------------------------------------------------------
+brain:
+  model: openai/gpt-4o
+  temperature: 0.0
+  max_tokens: 4096
+  timeout_s: 60.0
+  max_replan_iterations: 5
+  # api_base: http://localhost:8000/v1   # uncomment for local vLLM / proxy
+  api_key_env: OPENAI_API_KEY            # name of the env var holding the key
+
+# ---------------------------------------------------------------------------
+# Tool middleware defaults.
+# ---------------------------------------------------------------------------
+tool:
+  default_timeout_s: 30.0
+  max_retries: 3
+  retry_backoff_base_s: 1.0
+
+# ---------------------------------------------------------------------------
+# Safety envelope (ADR-007). Never disable in production.
+# ---------------------------------------------------------------------------
+safety:
+  enabled: true
+  max_joint_velocity_rad_s: 1.0
+  workspace_bounds_m: [-2.0, -2.0, 0.0, 2.0, 2.0, 2.0]   # [xmin ymin zmin xmax ymax zmax]
+
+# ---------------------------------------------------------------------------
+# Observability.
+# ---------------------------------------------------------------------------
+observability:
+  trace_sink: stderr            # stderr | file
+  trace_file: ""                # used when trace_sink == "file"
+  otel_endpoint: ""             # OTLP collector, e.g. http://localhost:4317
+
+# ---------------------------------------------------------------------------
+# Fleet. Single robot is fleet_size: 1 with one entry in robot_ids.
+# ---------------------------------------------------------------------------
+fleet_size: 1
+robot_ids:
+  - robot-0
