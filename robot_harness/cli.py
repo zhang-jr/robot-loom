@@ -67,6 +67,12 @@ def _cmd_skill_list(args: argparse.Namespace) -> None:
         print(f"  {m.name:30s}  v{m.version}  safety={m.safety_class.value}")  # noqa: T201
 
 
+def _cmd_skill_validate(args: argparse.Namespace) -> None:
+    from robot_harness.skill.manifest_validator import validate_cli
+
+    sys.exit(validate_cli(args.files))
+
+
 def _cmd_fleet_status(args: argparse.Namespace) -> None:
     ctx = _build_ctx()
     cfg = ctx.config
@@ -138,6 +144,8 @@ def main() -> None:
     skill_p = sub.add_parser("skill", help="Skill management")
     skill_sub = skill_p.add_subparsers(dest="skill_cmd")
     skill_sub.add_parser("list", help="List registered skills")
+    validate_p = skill_sub.add_parser("validate", help="Validate skill manifest YAML files")
+    validate_p.add_argument("files", nargs="+", metavar="manifest.yaml")
 
     fleet_p = sub.add_parser("fleet", help="Fleet management")
     fleet_sub = fleet_p.add_subparsers(dest="fleet_cmd")
@@ -153,6 +161,8 @@ def main() -> None:
         _cmd_tool_list(args)
     elif args.command == "skill" and args.skill_cmd == "list":
         _cmd_skill_list(args)
+    elif args.command == "skill" and args.skill_cmd == "validate":
+        _cmd_skill_validate(args)
     elif args.command == "fleet" and args.fleet_cmd == "status":
         _cmd_fleet_status(args)
     else:

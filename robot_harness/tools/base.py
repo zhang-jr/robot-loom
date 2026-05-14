@@ -116,6 +116,7 @@ class BrainProfile(BaseModel):
     """Describes which tool-spec format a Brain backend expects."""
 
     name: str  # 'openai' | 'anthropic' | 'mcp'
+    supports_native_reflection: bool = True  # False → register ReflectionTool
 
 
 BrainToolSpec = dict[str, Any]

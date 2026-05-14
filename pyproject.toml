@@ -63,7 +63,8 @@ select = [
 ignore = [
     "E501",   # line too long — enforced by formatter, not linter
     "B008",   # function calls in default argument — common in FastAPI-style patterns
-    "ASYNC240", # pathlib in async is fine for asyncio — trio/anyio not used
+    # ASYNC240 removed: pre-commit pins ruff v0.5.0 which does not recognise this selector.
+    # Re-add when ruff in pre-commit-config is bumped past the version that introduced ASYNC240.
 ]
 
 [tool.ruff.lint.isort]
@@ -78,7 +79,18 @@ force-sort-within-sections = false
 "examples/**/*.py" = [
     "T201",    # print() allowed in runnable examples
 ]
-"robot_harness/tools/generic/fs.py" = []
+"robot_harness/skill/manifest_validator.py" = [
+    "T201",    # CLI tool — print() to stdout/stderr is intentional
+]
+"robot_harness/channels/cli.py" = [
+    "T201",    # CLI channel writes to stdout/stderr by design
+]
+"robot_harness/observability/metrics.py" = [
+    "T201",    # startup banner printed to stderr is intentional
+]
+"robot_harness/tools/generic/fs.py" = [
+    "ASYNC",  # pathlib in asyncio context is fine here — project uses asyncio not trio/anyio
+]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -134,6 +146,11 @@ module = [
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+# fastapi is an optional extra — only present when installed
+module = ["fastapi", "fastapi.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 # Tests: relax some strict checks for fixtures / broad catches
 module = ["tests.*"]
 disallow_untyped_defs = true
@@ -145,6 +162,23 @@ warn_return_any = false
 module = ["examples.*"]
 disallow_untyped_defs = false
 warn_return_any = false
+
+[[tool.mypy.overrides]]
+# metrics.py uses conditional imports; type: ignore comments are needed for
+# mypy 1.20+ but flagged unused by mypy 1.10 (pre-commit pin).
+module = ["robot_harness.observability.metrics"]
+warn_unused_ignores = false
+
+[[tool.mypy.overrides]]
+# web channel uses fastapi (optional dep) — relax strict checks.
+# warn_unused_ignores=false because mypy 1.10 uses [misc] and 1.20+ uses
+# [untyped-decorator] for the same error; keeping both codes avoids breakage
+# when the pre-commit hook mypy version diverges from the local one.
+module = ["robot_harness.channels.web"]
+disallow_untyped_defs = false
+warn_return_any = false
+disallow_any_unimported = false
+warn_unused_ignores = false
 
 # ---------------------------------------------------------------------------
 # Pytest

@@ -44,6 +44,8 @@ class MemoryView(BaseModel):
     place_hits: list[dict[str, Any]] = []
     episodic_hits: list[dict[str, Any]] = []
     semantic_hits: list[dict[str, Any]] = []
+    # Cognitive scaffold re-injected after context compression (ADR-018).
+    scaffold_context: str | None = None
 
 
 class ExecutionHistory(BaseModel):

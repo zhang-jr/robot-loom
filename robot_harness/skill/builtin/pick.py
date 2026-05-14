@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from robot_harness.memory.base import MemoryEntry
 from robot_harness.skill.base import SkillManifest, SkillResult, Subtask
 from robot_harness.skill.safety_class import SafetyClass
 from robot_harness.tools.base import ToolContext, ToolRegistry
@@ -72,8 +73,9 @@ class PickSkill:
             tool_ctx,
         )
 
+        skill_result: SkillResult
         if act.success:
-            return SkillResult(
+            skill_result = SkillResult(
                 skill_name="pick",
                 skill_version="0.1.0",
                 subtask_id=subtask.subtask_id,
@@ -81,10 +83,13 @@ class PickSkill:
                 outcome="success",
                 artifacts={"picked_object": object_name, "pose": pose},
             )
-        return _fail(subtask, act.error or "action dispatch failed")
+        else:
+            skill_result = _fail(subtask, act.error or "action dispatch failed")
+
+        await _write_episode(ctx, subtask, skill_result, object_name)
+        return skill_result
 
     async def rollback(self, ctx: Any) -> None:
-        # Phase 2: open gripper + return to home pose
         pass
 
 
@@ -97,3 +102,22 @@ def _fail(subtask: Subtask, message: str) -> SkillResult:
         outcome="failure",
         message=message,
     )
+
+
+async def _write_episode(ctx: Any, subtask: Subtask, result: SkillResult, object_name: str) -> None:
+    try:
+        await ctx.memory.write(
+            MemoryEntry(
+                memory_type="episodic",
+                robot_id=subtask.robot_id,
+                content={
+                    "skill": "pick",
+                    "object": object_name,
+                    "outcome": result.outcome,
+                    "subtask_id": subtask.subtask_id,
+                },
+                tags=["skill:pick", result.outcome, subtask.robot_id],
+            )
+        )
+    except Exception:  # noqa: BLE001
+        pass
