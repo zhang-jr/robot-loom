@@ -164,6 +164,12 @@ disallow_untyped_defs = false
 warn_return_any = false
 
 [[tool.mypy.overrides]]
+# metrics.py uses conditional imports; type: ignore comments are needed for
+# mypy 1.20+ but flagged unused by mypy 1.10 (pre-commit pin).
+module = ["robot_harness.observability.metrics"]
+warn_unused_ignores = false
+
+[[tool.mypy.overrides]]
 # web channel uses fastapi (optional dep) — relax strict checks.
 # warn_unused_ignores=false because mypy 1.10 uses [misc] and 1.20+ uses
 # [untyped-decorator] for the same error; keeping both codes avoids breakage
