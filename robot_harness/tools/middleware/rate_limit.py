@@ -92,8 +92,7 @@ class RateLimitMiddleware(ToolMiddleware):
                 )
             if not self._get_robot_bucket(ctx.robot_id).consume():
                 raise ToolBackendUnreachableError(
-                    f"Rate limit exceeded for tool '{self._inner.name}' "
-                    f"(robot '{ctx.robot_id}')",
+                    f"Rate limit exceeded for tool '{self._inner.name}' (robot '{ctx.robot_id}')",
                     tool_name=self._inner.name,
                     trace_id=ctx.trace_id,
                     robot_id=ctx.robot_id,

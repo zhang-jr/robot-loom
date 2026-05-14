@@ -28,8 +28,7 @@ def create_app(agent_loop_factory: Any = None) -> Any:
         from pydantic import BaseModel as _BaseModel
     except ImportError as exc:
         raise ImportError(
-            "fastapi is required for the web channel.  "
-            "Install it with: pip install robot-loom[web]"
+            "fastapi is required for the web channel.  Install it with: pip install robot-loom[web]"
         ) from exc
 
     app = FastAPI(title="Robot Loom", version="0.1.0")
