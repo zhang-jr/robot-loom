@@ -85,6 +85,9 @@ BENCHMARKS.md
 # User workspace (kept at ~/.robot-loom/workspace/)
 workspace/
 
+# 外部协作组 roadmap 文档 — 走云文档（飞书 / Notion 等），不进 git
+/docs/shared/
+
 # Secrets / credentials
 *.pem
 *.key
