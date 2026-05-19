@@ -1,10 +1,17 @@
-"""Integration tests: all mock tool adapters end-to-end.
+"""Integration tests: all tool adapters end-to-end against mock backends.
 
-Verifies that each mock tool can be registered, invoked, and returns a
-well-formed ToolResult without contacting any external server.
+Perception tools are MCP-backed; the MCP transport is replaced with a
+:class:`FakeMCPClientSession` so no real server is required.  Other tools
+(grasp, critic, VLA, robot_sdk, memory, etc.) still ship in-process mock
+adapters that don't need a server.
+
+Each tool here is exercised exactly as the Brain would invoke it through the
+registry, verifying schema-correct round-trip without hardware or GPU.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 import pytest
 
@@ -15,24 +22,84 @@ from robot_harness.tools.generic.fs import ReadFileTool, WriteFileTool
 from robot_harness.tools.generic.message import SendMessageTool
 from robot_harness.tools.generic.shell import ShellTool
 from robot_harness.tools.grasp.anygrasp_adapter import AnyGraspTool
+from robot_harness.tools.mcp.client import MCPTool
 from robot_harness.tools.memory.ingest_tool import MemoryIngestTool
 from robot_harness.tools.memory.query_tool import MemoryQueryTool
 from robot_harness.tools.memory.upsert_tool import MemoryUpsertTool
-from robot_harness.tools.perception.depth_adapter import DepthEstimationTool
-from robot_harness.tools.perception.yolo_adapter import YoloDetectionTool
+from robot_harness.tools.perception.mcp_bundle import (
+    PERCEPTION_DETECT_OBJECTS,
+    PERCEPTION_ESTIMATE_DEPTH,
+    PERCEPTION_GROUND_PHRASE,
+    build_perception_tools,
+)
 from robot_harness.tools.robot_sdk.http_adapter import RobotSdkTool
 from robot_harness.tools.vla.serving_adapter import VlaServingTool
+from tests._helpers.mcp import FakeMCPClientSession, make_call_result
+
+_TINY_IMAGE_B64 = "Zm9v"  # 'foo' — opaque to fake server
 
 
 def _ctx(robot_id: str = "robot-0") -> ToolContext:
     return ToolContext.create(robot_id)
 
 
+def _build_perception_with_fake() -> tuple[list[MCPTool], FakeMCPClientSession]:
+    """Build the perception MCP bundle and attach a single FakeMCPClientSession.
+
+    All perception tools share the same fake so call records and scripted
+    responses are centralized.
+    """
+    fake = FakeMCPClientSession(
+        responses={
+            PERCEPTION_DETECT_OBJECTS: make_call_result(
+                structured={
+                    "detections": [
+                        {
+                            "label": "cup",
+                            "confidence": 0.92,
+                            "bbox": [0.30, 0.20, 0.55, 0.45],
+                            "matched_prompt": "cup",
+                        }
+                    ],
+                    "latency_ms": 41.0,
+                    "model_version": "fake-detector@0.0.1",
+                }
+            ),
+            PERCEPTION_ESTIMATE_DEPTH: make_call_result(
+                structured={
+                    "depth_b64_png16": "ZmFrZQ==",
+                    "shape": [240, 320],
+                    "min": 0.0,
+                    "max": 1.0,
+                    "scale_unit": "relative",
+                    "latency_ms": 27.0,
+                    "model_version": "fake-depth@0.0.1",
+                }
+            ),
+            PERCEPTION_GROUND_PHRASE: make_call_result(
+                structured={
+                    "detection": {
+                        "label": "cup",
+                        "confidence": 0.81,
+                        "bbox": [0.30, 0.20, 0.55, 0.45],
+                    },
+                    "latency_ms": 18.0,
+                }
+            ),
+        },
+    )
+    tools = build_perception_tools("http://fake:9000")
+    for tool in tools:
+        tool._session_factory = lambda _u, _t, _f=fake: _f  # type: ignore[method-assign,assignment]
+    return tools, fake
+
+
 def _registry_with_all_tools() -> ToolRegistry:
     memory = NullMemory()
     r = ToolRegistry()
-    r.register(YoloDetectionTool())
-    r.register(DepthEstimationTool())
+    perception_tools, _fake = _build_perception_with_fake()
+    for tool in perception_tools:
+        r.register(tool)
     r.register(AnyGraspTool())
     r.register(VlacCriticTool())
     r.register(VlaServingTool())
@@ -55,8 +122,9 @@ def _registry_with_all_tools() -> ToolRegistry:
 def test_all_tools_registered() -> None:
     r = _registry_with_all_tools()
     expected = {
-        "perception.detect_objects",
-        "perception.estimate_depth",
+        PERCEPTION_DETECT_OBJECTS,
+        PERCEPTION_ESTIMATE_DEPTH,
+        PERCEPTION_GROUND_PHRASE,
         "grasp.estimate_pose",
         "critic.judge_progress",
         "vla.infer_action",
@@ -74,25 +142,53 @@ def test_all_tools_registered() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Mock tool invocations
+# Perception (MCP-backed via FakeMCPClientSession)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_yolo_detection_mock() -> None:
-    tool = YoloDetectionTool()
-    result = await tool.invoke({"image_source": "wrist_camera", "query": "cup"}, _ctx())
+async def test_detect_objects_via_fake_mcp() -> None:
+    tools, fake = _build_perception_with_fake()
+    tool = next(t for t in tools if t.name == PERCEPTION_DETECT_OBJECTS)
+
+    result = await tool.invoke(
+        {"image_b64": _TINY_IMAGE_B64, "prompts": ["cup"]},
+        _ctx(),
+    )
     assert result.success
-    assert "detections" in (result.output or {})
-    assert result.output["count"] >= 1  # type: ignore[index]
+    output = result.output or {}
+    assert output["detections"][0]["label"] == "cup"
+    assert fake.calls[-1].name == PERCEPTION_DETECT_OBJECTS
 
 
 @pytest.mark.asyncio
-async def test_depth_estimation_mock() -> None:
-    tool = DepthEstimationTool()
-    result = await tool.invoke({"image_source": "wrist_camera"}, _ctx())
+async def test_estimate_depth_via_fake_mcp() -> None:
+    tools, _fake = _build_perception_with_fake()
+    tool = next(t for t in tools if t.name == PERCEPTION_ESTIMATE_DEPTH)
+
+    result = await tool.invoke({"image_b64": _TINY_IMAGE_B64}, _ctx())
     assert result.success
-    assert (result.output or {}).get("depth_m", 0) > 0
+    output = result.output or {}
+    assert output["scale_unit"] == "relative"
+    assert output["shape"] == [240, 320]
+
+
+@pytest.mark.asyncio
+async def test_ground_phrase_via_fake_mcp() -> None:
+    tools, _fake = _build_perception_with_fake()
+    tool = next(t for t in tools if t.name == PERCEPTION_GROUND_PHRASE)
+
+    result = await tool.invoke(
+        {"image_b64": _TINY_IMAGE_B64, "phrase": "the cup"},
+        _ctx(),
+    )
+    assert result.success
+    assert (result.output or {})["detection"]["label"] == "cup"
+
+
+# ---------------------------------------------------------------------------
+# Other tool mock invocations
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -202,9 +298,11 @@ async def test_memory_ingest_via_tool() -> None:
 
 @pytest.mark.asyncio
 async def test_all_mock_tools_tool_name_in_result() -> None:
-    tools_and_args: list[tuple[object, dict]] = [
-        (YoloDetectionTool(), {"image_source": "cam", "query": "cup"}),
-        (DepthEstimationTool(), {"image_source": "cam"}),
+    perception_tools, _fake = _build_perception_with_fake()
+    tools_and_args: list[tuple[Any, dict[str, Any]]] = [
+        (perception_tools[0], {"image_b64": _TINY_IMAGE_B64, "prompts": ["cup"]}),
+        (perception_tools[1], {"image_b64": _TINY_IMAGE_B64}),
+        (perception_tools[2], {"image_b64": _TINY_IMAGE_B64, "phrase": "cup"}),
         (AnyGraspTool(), {"detections": {}}),
         (VlacCriticTool(), {"task_description": "pick"}),
         (
@@ -218,5 +316,5 @@ async def test_all_mock_tools_tool_name_in_result() -> None:
     ]
     for tool, args in tools_and_args:
         ctx = _ctx()
-        result = await tool.invoke(args, ctx)  # type: ignore[union-attr]
-        assert result.tool_name == tool.name  # type: ignore[union-attr]
+        result = await tool.invoke(args, ctx)
+        assert result.tool_name == tool.name
