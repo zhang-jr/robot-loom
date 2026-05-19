@@ -26,11 +26,27 @@ brain:
 
 # ---------------------------------------------------------------------------
 # Tool middleware defaults.
+#
+# default_middleware declares the chain applied to every registered tool.
+# Entries are applied outermost-first (first entry wraps everything beneath).
+# Supported types: trace | timeout | retry | cancel | circuit_breaker | cache | rate_limit
+# Each entry may include a `params` map forwarded to the middleware constructor.
 # ---------------------------------------------------------------------------
 tool:
   default_timeout_s: 30.0
   max_retries: 3
   retry_backoff_base_s: 1.0
+  default_middleware:
+    - type: trace
+    - type: timeout
+    - type: retry
+      params:
+        max_retries: 3
+        backoff_base_s: 1.0
+    - type: circuit_breaker
+      params:
+        failure_threshold: 5
+        reset_timeout_s: 30.0
 
 # ---------------------------------------------------------------------------
 # Safety envelope (ADR-007). Never disable in production.
@@ -46,7 +62,9 @@ safety:
 observability:
   trace_sink: stderr            # stderr | file
   trace_file: ""                # used when trace_sink == "file"
-  otel_endpoint: ""             # OTLP collector, e.g. http://localhost:4317
+  otel_endpoint: ""             # OTLP/HTTP collector — set to enable OTel spans
+                                # Langfuse:  https://<host>/api/public/otel
+                                # Jaeger:    http://localhost:4318/v1/traces
 
 # ---------------------------------------------------------------------------
 # Fleet. Single robot is fleet_size: 1 with one entry in robot_ids.

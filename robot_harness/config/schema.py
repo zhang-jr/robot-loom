@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -17,10 +17,33 @@ class BrainConfig(BaseModel):
     api_key_env: str = "OPENAI_API_KEY"
 
 
+class MiddlewareSpec(BaseModel):
+    """Declarative spec for one middleware in a tool's chain.
+
+    ``type`` selects the middleware class; remaining fields are forwarded as
+    keyword arguments to its constructor.
+
+    Supported types:
+        trace, timeout, retry, cancel, circuit_breaker, cache, rate_limit
+    """
+
+    type: Literal[
+        "trace",
+        "timeout",
+        "retry",
+        "cancel",
+        "circuit_breaker",
+        "cache",
+        "rate_limit",
+    ]
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
 class ToolConfig(BaseModel):
     default_timeout_s: float = 30.0
     max_retries: int = 3
     retry_backoff_base_s: float = 1.0
+    default_middleware: list[MiddlewareSpec] = Field(default_factory=list)
 
 
 class SafetyConfig(BaseModel):
