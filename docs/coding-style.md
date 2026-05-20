@@ -37,8 +37,8 @@ async def _process_items(self, items, ctx):
 物理目录结构要让人一眼看出模块职责。新增模块时，放在与职责匹配的目录下，不要因为"先随便放"而堆进 `utils/` 或根目录。
 
 ```
-tools/perception/yolo_adapter.py    ✅ 职责清晰
-tools/utils/yolo.py                 ❌ utils 是垃圾桶
+tools/perception/mcp_bundle.py      ✅ 职责清晰
+tools/utils/perception.py           ❌ utils 是垃圾桶
 ```
 
 ### 框架代码 vs 用户资产
@@ -274,7 +274,7 @@ async def invoke(self, args: dict, ctx: ToolContext) -> ToolResult:
 ### 模块与文件
 
 ```
-tools/perception/yolo_adapter.py    # 小写 + 下划线
+tools/perception/mcp_bundle.py      # 小写 + 下划线
 skill/builtin/pick.py
 embodiment/arm/generic_6dof.py
 ```

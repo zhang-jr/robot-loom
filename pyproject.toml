@@ -178,6 +178,13 @@ warn_return_any = false
 disallow_any_unimported = false
 warn_unused_ignores = false
 
+[[tool.mypy.overrides]]
+# mcp SDK ships no type stubs; ClientSession / CallToolResult / ListToolsResult
+# all become Any.  disallow_any_unimported is relaxed only for this thin
+# adapter — all callers outside tools/mcp/ still see typed ToolResult.
+module = ["robot_harness.tools.mcp.client"]
+disallow_any_unimported = false
+
 # ---------------------------------------------------------------------------
 # Pytest
 # ---------------------------------------------------------------------------

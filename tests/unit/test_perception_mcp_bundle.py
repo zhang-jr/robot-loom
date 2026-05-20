@@ -1,0 +1,205 @@
+"""Unit tests for the perception MCP bundle (recipe-aligned contracts)."""
+
+from __future__ import annotations
+
+import pytest
+
+from robot_harness.errors import ToolBackendUnreachableError
+from robot_harness.tools.base import ToolContext, ToolRegistry
+from robot_harness.tools.mcp.client import MCPTool
+from robot_harness.tools.perception.mcp_bundle import (
+    PERCEPTION_DETECT_OBJECTS,
+    PERCEPTION_ESTIMATE_DEPTH,
+    PERCEPTION_GROUND_PHRASE,
+    PERCEPTION_SEGMENT_PROMPTABLE,
+    PHASE_A_TOOL_NAMES,
+    build_perception_tools,
+    verify_server_compatibility,
+)
+from tests._helpers.mcp import (
+    FakeMCPClientSession,
+    make_call_result,
+    make_list_tools_result,
+)
+
+
+def _ctx() -> ToolContext:
+    return ToolContext.create("robot-0", timeout_s=5.0)
+
+
+# ---------------------------------------------------------------------------
+# Factory output
+# ---------------------------------------------------------------------------
+
+
+def test_factory_returns_phase_a_only_by_default() -> None:
+    tools = build_perception_tools("http://localhost:8765")
+    names = [t.name for t in tools]
+    assert names == list(PHASE_A_TOOL_NAMES)
+    assert PERCEPTION_SEGMENT_PROMPTABLE not in names
+
+
+def test_factory_includes_phase_b_when_requested() -> None:
+    tools = build_perception_tools("http://localhost:8765", include_phase_b=True)
+    names = {t.name for t in tools}
+    assert PERCEPTION_SEGMENT_PROMPTABLE in names
+    assert names.issuperset(PHASE_A_TOOL_NAMES)
+
+
+def test_factory_tools_are_mcp_backend() -> None:
+    for tool in build_perception_tools("http://localhost:8765"):
+        assert isinstance(tool, MCPTool)
+        assert tool.backend == "mcp"
+        assert tool.server_url == "http://localhost:8765"
+
+
+def test_factory_tools_are_idempotent() -> None:
+    for tool in build_perception_tools("http://localhost:8765", include_phase_b=True):
+        assert tool.is_idempotent is True
+
+
+def test_factory_tools_register_into_registry() -> None:
+    registry = ToolRegistry()
+    for tool in build_perception_tools("http://localhost:8765"):
+        registry.register(tool)
+    assert PERCEPTION_DETECT_OBJECTS in registry
+    assert PERCEPTION_ESTIMATE_DEPTH in registry
+    assert PERCEPTION_GROUND_PHRASE in registry
+
+
+# ---------------------------------------------------------------------------
+# Schema contract
+# ---------------------------------------------------------------------------
+
+
+def test_detect_objects_schema_requires_image_b64_and_prompts() -> None:
+    tools = {t.name: t for t in build_perception_tools("http://x")}
+    schema = tools[PERCEPTION_DETECT_OBJECTS].schema.input_schema
+    assert "image_b64" in schema["properties"]
+    assert "prompts" in schema["properties"]
+    assert set(schema["required"]) == {"image_b64", "prompts"}
+
+
+def test_estimate_depth_schema_requires_image_b64() -> None:
+    tools = {t.name: t for t in build_perception_tools("http://x")}
+    schema = tools[PERCEPTION_ESTIMATE_DEPTH].schema.input_schema
+    assert schema["required"] == ["image_b64"]
+    # 'output' field has enum constraint
+    assert schema["properties"]["output"]["enum"] == ["relative", "metric_if_available"]
+
+
+def test_ground_phrase_schema_requires_image_and_phrase() -> None:
+    tools = {t.name: t for t in build_perception_tools("http://x")}
+    schema = tools[PERCEPTION_GROUND_PHRASE].schema.input_schema
+    assert set(schema["required"]) == {"image_b64", "phrase"}
+
+
+def test_output_schemas_present() -> None:
+    """Every perception tool publishes an output schema (helps strict Brains)."""
+    for tool in build_perception_tools("http://x", include_phase_b=True):
+        assert tool.schema.output_schema is not None, tool.name
+
+
+# ---------------------------------------------------------------------------
+# End-to-end via FakeMCPClientSession
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_detect_objects_roundtrip_through_mcp() -> None:
+    tools = {t.name: t for t in build_perception_tools("http://x")}
+    tool = tools[PERCEPTION_DETECT_OBJECTS]
+
+    expected_detections = [
+        {
+            "label": "mug",
+            "confidence": 0.87,
+            "bbox": [0.42, 0.31, 0.58, 0.55],
+            "matched_prompt": "mug",
+        }
+    ]
+    fake = FakeMCPClientSession(
+        responses={
+            PERCEPTION_DETECT_OBJECTS: make_call_result(
+                structured={
+                    "detections": expected_detections,
+                    "latency_ms": 42.0,
+                    "model_version": "grounding_dino@1.6.0",
+                },
+            )
+        },
+    )
+    tool._session_factory = lambda _url, _t: fake  # type: ignore[method-assign,assignment]
+
+    result = await tool.invoke(
+        {"image_b64": "Zm9v", "prompts": ["mug"]},
+        _ctx(),
+    )
+    assert result.success is True
+    assert result.output is not None
+    assert result.output["detections"] == expected_detections
+    # The fake captured the call with our args.
+    assert fake.calls[0].name == PERCEPTION_DETECT_OBJECTS
+    assert fake.calls[0].args == {"image_b64": "Zm9v", "prompts": ["mug"]}
+
+
+@pytest.mark.asyncio
+async def test_ground_phrase_returns_null_detection() -> None:
+    tools = {t.name: t for t in build_perception_tools("http://x")}
+    tool = tools[PERCEPTION_GROUND_PHRASE]
+    fake = FakeMCPClientSession(
+        responses={
+            PERCEPTION_GROUND_PHRASE: make_call_result(
+                structured={"detection": None, "latency_ms": 18.0}
+            )
+        },
+    )
+    tool._session_factory = lambda _url, _t: fake  # type: ignore[method-assign,assignment]
+
+    result = await tool.invoke(
+        {"image_b64": "Zm9v", "phrase": "purple unicorn"},
+        _ctx(),
+    )
+    assert result.success is True
+    assert result.output == {"detection": None, "latency_ms": 18.0}
+
+
+# ---------------------------------------------------------------------------
+# verify_server_compatibility
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_verify_compatibility_passes_when_all_present() -> None:
+    fake = FakeMCPClientSession(
+        list_tools_result=make_list_tools_result(list(PHASE_A_TOOL_NAMES)),
+    )
+    async with fake as session:
+        # Should not raise.
+        await verify_server_compatibility(session)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_verify_compatibility_raises_on_missing_tool() -> None:
+    fake = FakeMCPClientSession(
+        list_tools_result=make_list_tools_result(
+            [PERCEPTION_DETECT_OBJECTS, PERCEPTION_ESTIMATE_DEPTH]
+            # ground_phrase intentionally missing
+        ),
+    )
+    async with fake as session:
+        with pytest.raises(ToolBackendUnreachableError, match="ground_phrase"):
+            await verify_server_compatibility(session)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_verify_compatibility_with_custom_expected_set() -> None:
+    fake = FakeMCPClientSession(
+        list_tools_result=make_list_tools_result([PERCEPTION_DETECT_OBJECTS]),
+    )
+    async with fake as session:
+        # Only require detect_objects — should pass.
+        await verify_server_compatibility(
+            session,  # type: ignore[arg-type]
+            expected_names=(PERCEPTION_DETECT_OBJECTS,),
+        )
