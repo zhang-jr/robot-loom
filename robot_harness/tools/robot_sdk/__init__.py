@@ -52,5 +52,35 @@ Reference contrast (ADR-019):
 """
 
 from robot_harness.tools.robot_sdk.http_adapter import RobotSdkTool
+from robot_harness.tools.robot_sdk.verbs import (
+    COMPLETION_VERDICT_SCHEMA,
+    ROBOT_SDK_HOME,
+    ROBOT_SDK_MOVE_TO_POSE,
+    ROBOT_SDK_REACTIVE_GRASP,
+    ROBOT_SDK_VISUAL_SERVO_TO,
+    VERB_TOOL_NAMES,
+    CompletionOutcome,
+    CompletionVerdict,
+    HomeTool,
+    MoveToPoseTool,
+    ReactiveGraspTool,
+    VisualServoToTool,
+    build_robot_sdk_verb_tools,
+)
 
-__all__ = ["RobotSdkTool"]
+__all__ = [
+    "COMPLETION_VERDICT_SCHEMA",
+    "ROBOT_SDK_HOME",
+    "ROBOT_SDK_MOVE_TO_POSE",
+    "ROBOT_SDK_REACTIVE_GRASP",
+    "ROBOT_SDK_VISUAL_SERVO_TO",
+    "VERB_TOOL_NAMES",
+    "CompletionOutcome",
+    "CompletionVerdict",
+    "HomeTool",
+    "MoveToPoseTool",
+    "ReactiveGraspTool",
+    "RobotSdkTool",
+    "VisualServoToTool",
+    "build_robot_sdk_verb_tools",
+]
