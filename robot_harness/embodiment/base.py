@@ -1,4 +1,42 @@
-"""EmbodimentAdapter Protocol — the harness interface to robot hardware."""
+"""EmbodimentAdapter Protocol — the harness interface to robot hardware.
+
+Layered closed-loop boundary (see ADR-019):
+
+    ┌──────────────────────────────────────────────────────────────┐
+    │  harness (this process)                                      │
+    │    • slow loop 0.5-7 Hz: brain plan / skill orchestration    │
+    │    • calls dispatch(cmd) with HIGH-LEVEL intent              │
+    │    • awaits completion event, NOT every control tick         │
+    └──────────────────────────────────────────────────────────────┘
+                              │  HTTP / WS (JSON or msgpack)
+                              ▼
+    ┌──────────────────────────────────────────────────────────────┐
+    │  per-robot agent_server  (external process, on the robot)    │
+    │    • mid loop  5-30  Hz: visual servoing, reactive grasp,    │
+    │                          "approach until X" verbs            │
+    │    • tight loop 100-1000 Hz: joint servo, trajectory tracking,│
+    │                              hand-eye calibration, e-stop    │
+    │                              reflex, IMU/force fusion        │
+    └──────────────────────────────────────────────────────────────┘
+
+What the harness DOES via this Protocol:
+    • dispatch high-level commands (joint target / cartesian goal / locomotion goal / verb)
+    • read latest state / camera frame (low-frequency sampling, NOT a stream)
+    • run SafetyEnvelope.check() as a pre-dispatch authorization step
+      (high-level constraints — pose reachability, fleet-wide conflicts);
+      the per-robot agent_server is still responsible for hard safety reflexes.
+
+What the harness MUST NOT do via this Protocol:
+    • run control loops at robot frequencies (100+ Hz)
+    • perform hand-eye calibration (lives on-robot, calibration data is read-only here)
+    • drive every tick of a visual-servoing loop — issue a reactive verb instead
+      (see robot_harness/tools/robot_sdk/, e.g. reactive_grasp / visual_servo_to)
+    • assume dispatch() is synchronous to motion completion — it returns a handle
+
+Implementations live in embodiment/{arm,humanoid,quadruped,mobile}/ and only
+translate the unified EmbodimentCommand into the per-robot agent_server's
+wire format. Hardware-specific control logic does NOT belong here.
+"""
 
 from __future__ import annotations
 
@@ -29,13 +67,31 @@ class RobotState(BaseModel):
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
+CommandType = Literal["joint", "cartesian", "delta", "locomotion", "hand_grasp"]
+
+
 class EmbodimentCommand(BaseModel):
-    """Unified command sent to the EmbodimentAdapter.dispatch()."""
+    """Unified command sent to the EmbodimentAdapter.dispatch().
+
+    This is a HIGH-LEVEL intent, not a control-tick payload (ADR-019).
+
+    command_type semantics:
+      - "joint"      : target joint configuration; on-robot runtime plans the trajectory
+      - "cartesian"  : target end-effector pose; on-robot runtime does IK + planning
+      - "delta"      : incremental displacement from current pose
+      - "locomotion" : mobile-base / leg goal (pose or twist target, NOT a velocity stream)
+      - "hand_grasp" : open / close gripper at a target force or width
+
+    For reactive verbs that need a tight perception-action loop (visual servoing,
+    "approach until grasp succeeds"), do NOT model them here — expose them as
+    robot_sdk tools that wrap the per-robot agent_server's verb endpoints, so
+    the loop runs on-robot and the harness only observes the completion event.
+    """
 
     robot_id: str
-    command_type: Literal["joint", "cartesian", "delta", "locomotion", "hand_grasp"]
+    command_type: CommandType
     values: list[float] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    extra: dict[str, Any] = Field(default_factory=dict)
 
 
 class SafetyVerdict(BaseModel):
@@ -56,9 +112,21 @@ class DispatchHandle(BaseModel):
 
 @runtime_checkable
 class EmbodimentAdapter(Protocol):
-    """Interface to a specific robot's control layer.
+    """Interface to a specific robot's per-robot agent_server (NOT its control layer).
 
-    All dispatch() calls MUST be preceded by SafetyEnvelope.check().
+    An EmbodimentAdapter is a thin client that translates EmbodimentCommand into
+    the wire format consumed by an external on-robot agent_server. The agent_server
+    owns all real-time control: trajectory tracking, joint servo, hand-eye
+    calibration, IMU/force fusion, e-stop reflex. The adapter never runs a control
+    loop in-process.
+
+    Contract:
+      • All dispatch() calls MUST be preceded by SafetyEnvelope.check() (ADR-007).
+      • dispatch() returns a DispatchHandle immediately — callers await completion
+        events through the handle, not by polling state at control frequency.
+      • get_state() / get_camera_frame() are low-frequency sampling endpoints
+        for brain reasoning; high-rate streaming belongs in a separate channel.
+
     Implementations live in embodiment/{arm,humanoid,quadruped,mobile}/.
     """
 

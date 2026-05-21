@@ -1,4 +1,12 @@
-"""RobotSdkTool — mock adapter for a per-robot HTTP agent_server."""
+"""RobotSdkTool — harness-side dispatch tool for a per-robot HTTP agent_server.
+
+This is the low-level "execute a concrete command" flavor (see package docstring
+and ADR-019). It hands a fully-resolved EmbodimentCommand to the on-robot
+agent_server and returns a handle; it does NOT drive control loops or
+visual-servoing loops. Reactive verbs that need a tight perception-action loop
+will live as separate tools in this package and call distinct verb endpoints
+on the same agent_server.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +20,16 @@ from robot_harness.tools.schema import ToolBackend, ToolSchema
 
 class RobotSdkTool:
     """Mock per-robot action dispatch tool.
+
+    Boundary (ADR-019):
+      • This tool transports a HIGH-LEVEL command and returns a handle.
+      • The on-robot agent_server is responsible for trajectory planning, joint
+        servo, hand-eye calibration, IMU/force fusion, and e-stop reflex.
+      • The harness only awaits a completion event; it never observes per-tick
+        state through this tool.
+      • Visual servoing or "approach until X" loops must NOT be implemented by
+        repeatedly invoking this tool — wrap them as a reactive verb on the
+        agent_server instead (separate tool in this package).
 
     Phase 1: simulates command dispatch without contacting any hardware.
     Phase 2: will POST EmbodimentCommand to a per-robot HTTP/WebSocket agent_server.
