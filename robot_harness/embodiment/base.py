@@ -67,6 +67,9 @@ class RobotState(BaseModel):
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
+CommandType = Literal["joint", "cartesian", "delta", "locomotion", "hand_grasp"]
+
+
 class EmbodimentCommand(BaseModel):
     """Unified command sent to the EmbodimentAdapter.dispatch().
 
@@ -84,6 +87,11 @@ class EmbodimentCommand(BaseModel):
     robot_sdk tools that wrap the per-robot agent_server's verb endpoints, so
     the loop runs on-robot and the harness only observes the completion event.
     """
+
+    robot_id: str
+    command_type: CommandType
+    values: list[float] = Field(default_factory=list)
+    extra: dict[str, Any] = Field(default_factory=dict)
 
 
 class SafetyVerdict(BaseModel):
