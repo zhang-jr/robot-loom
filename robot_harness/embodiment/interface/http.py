@@ -1,5 +1,10 @@
 """HTTP/WebSocket interface helpers for per-robot agent_server communication.
 
+This is the on-the-wire layer of the boundary defined in ADR-019: the harness
+talks to an external on-robot agent_server that owns all real-time control.
+Everything in this file is a thin transport — no control logic, no calibration,
+no servoing loops.
+
 Phase 1: urllib-based stub that returns mock responses.
 Phase 2: will use aiohttp or httpx with proper connection pooling.
 """
