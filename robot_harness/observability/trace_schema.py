@@ -7,7 +7,7 @@ only the schema is pinned so downstream consumers can rely on it.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -48,7 +48,7 @@ class AgentTurnTrace(BaseModel):
     skill_version: str = ""
 
     outcome: Literal["success", "failure", "give_up", "in_progress"] = "in_progress"
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
 
     # Cognitive scaffold trail (ADR-018): plan/reflection store snapshots per turn.
     # Kept on a separate channel from physical episode data to avoid polluting
@@ -77,5 +77,5 @@ class EpisodeRecord(BaseModel):
     safety_audit_ids: list[str] = Field(default_factory=list)
 
     outcome: Literal["success", "failure", "incomplete"] = "incomplete"
-    started_at: datetime = Field(default_factory=datetime.utcnow)
+    started_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
     ended_at: datetime | None = None

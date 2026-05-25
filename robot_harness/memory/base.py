@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
 MemoryId = str
+MemoryType = Literal["object", "place", "episodic", "semantic"]
 
 
 class MemoryEntry(BaseModel):
     """Generic memory write payload."""
 
-    memory_type: str  # 'object' | 'place' | 'episodic' | 'semantic'
+    memory_type: MemoryType
     robot_id: str
     content: dict[str, Any]
     tags: list[str] = Field(default_factory=list)
@@ -21,7 +22,7 @@ class MemoryEntry(BaseModel):
 
 
 class MemoryQuery(BaseModel):
-    memory_type: str
+    memory_type: MemoryType
     robot_id: str = ""
     text: str = ""
     tags: list[str] = Field(default_factory=list)

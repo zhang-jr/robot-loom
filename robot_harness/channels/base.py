@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any, Protocol, runtime_checkable
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ChannelMessage(BaseModel):
@@ -19,7 +19,7 @@ class ChannelMessage(BaseModel):
     user_id: str
     text: str
     robot_id: str = "default"
-    metadata: dict[str, Any] = {}
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ChannelResponse(BaseModel):
@@ -29,7 +29,7 @@ class ChannelResponse(BaseModel):
     user_id: str
     text: str
     success: bool = True
-    metadata: dict[str, Any] = {}
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 @runtime_checkable

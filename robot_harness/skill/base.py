@@ -6,11 +6,17 @@ call external servers directly — only through ToolRegistry.
 
 from __future__ import annotations
 
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from robot_harness.skill.safety_class import SafetyClass
+
+if TYPE_CHECKING:
+    from typing import Self
+
+    from robot_harness.runtime.harness_context import HarnessContext
+    from robot_harness.tools.base import ToolRegistry
 
 
 class SkillManifest(BaseModel):
@@ -67,6 +73,12 @@ class SkillResult(BaseModel):
     message: str = ""
     artifacts: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def _sync_outcome(self) -> Self:
+        if not self.success and self.outcome == "success":
+            self.outcome = "failure"
+        return self
+
 
 class SwapHandle(BaseModel):
     """Returned by hotswap — call rollback() to revert to the previous version."""
@@ -89,13 +101,13 @@ class Skill(Protocol):
 
     manifest: SkillManifest
 
-    async def can_handle(self, subtask: Subtask, ctx: Any) -> bool: ...
+    async def can_handle(self, subtask: Subtask, ctx: HarnessContext) -> bool: ...
 
     async def execute(
         self,
         subtask: Subtask,
-        tools: Any,  # ToolRegistry — avoid circular import
-        ctx: Any,  # HarnessContext
+        tools: ToolRegistry,
+        ctx: HarnessContext,
     ) -> SkillResult: ...
 
-    async def rollback(self, ctx: Any) -> None: ...
+    async def rollback(self, ctx: HarnessContext) -> None: ...

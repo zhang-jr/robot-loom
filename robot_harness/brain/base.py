@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from robot_harness.tools.base import BrainToolSpec
 
 
 class Task(BaseModel):
@@ -14,8 +17,8 @@ class Task(BaseModel):
     description: str
     robot_id: str
     subtask_id: str = ""
-    constraints: list[str] = []
-    metadata: dict[str, Any] = {}
+    constraints: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolCallRequest(BaseModel):
@@ -30,11 +33,11 @@ class BrainDecision(BaseModel):
     """What the Brain decided to do next."""
 
     decision_type: Literal["tool_call", "plan", "give_up", "ask_user"]
-    tool_calls: list[ToolCallRequest] = []
+    tool_calls: list[ToolCallRequest] = Field(default_factory=list)
     plan: str = ""
     message: str = ""
     trace_id: str = ""
-    raw_response: dict[str, Any] = {}
+    raw_response: dict[str, Any] = Field(default_factory=dict)
 
 
 class MemoryView(BaseModel):
@@ -76,7 +79,7 @@ class Brain(Protocol):
         self,
         task: Task,
         memory_view: MemoryView,
-        tools: list[dict[str, Any]],
+        tools: list[BrainToolSpec],
     ) -> BrainDecision: ...
 
     async def replan(
