@@ -6,6 +6,7 @@ import uuid
 from dataclasses import dataclass, field
 
 from robot_harness.config.schema import HarnessConfig
+from robot_harness.embodiment.base import EmbodimentAdapter, Frame
 from robot_harness.memory.base import Memory, NullMemory
 from robot_harness.safety.envelope import SafetyEnvelope
 from robot_harness.skill.registry import SkillRegistry
@@ -36,6 +37,19 @@ class HarnessContext:
     session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     # robot_id → list of cognitive stores (plan, reflection, …)
     scaffold_stores: dict[str, list[CognitiveScaffoldStore]] = field(default_factory=dict)
+    # robot_id → EmbodimentAdapter (populated at session start for each robot)
+    embodiment_adapters: dict[str, EmbodimentAdapter] = field(default_factory=dict)
+
+    def get_adapter(self, robot_id: str) -> EmbodimentAdapter | None:
+        """Return the EmbodimentAdapter for *robot_id*, or None if not registered."""
+        return self.embodiment_adapters.get(robot_id)
+
+    async def get_camera_frame(self, robot_id: str, camera: str = "wrist") -> Frame:
+        """Fetch a camera frame from the robot, or return an empty frame if no adapter."""
+        adapter = self.get_adapter(robot_id)
+        if adapter is not None:
+            return await adapter.get_camera_frame(camera)
+        return Frame(camera=camera, robot_id=robot_id)
 
     def get_scaffold_stores(self, robot_id: str) -> list[CognitiveScaffoldStore]:
         """Return (or lazily create) the cognitive scaffold stores for a robot."""

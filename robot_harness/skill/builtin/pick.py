@@ -1,4 +1,4 @@
-"""Built-in PickSkill — perceive → estimate grasp → execute pick."""
+"""Built-in PickSkill — perceive → reactive grasp via on-robot verb."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from robot_harness.memory.base import MemoryEntry
 from robot_harness.skill.base import SkillManifest, SkillResult, Subtask
 from robot_harness.skill.safety_class import SafetyClass
 from robot_harness.tools.base import ToolContext, ToolRegistry
+from robot_harness.tools.robot_sdk.verbs import ROBOT_SDK_REACTIVE_GRASP
 
 
 class PickSkill:
@@ -15,20 +16,18 @@ class PickSkill:
 
     Tool call sequence:
     1. perception.detect_objects  — find the target object
-    2. grasp.estimate_pose        — compute grasp pose
-    3. robot_sdk.execute_action   — dispatch the pick motion
+    2. robot_sdk.reactive_grasp   — on-robot verb handles approach + grasp
     """
 
     manifest = SkillManifest(
         name="pick",
-        version="0.1.0",
+        version="0.2.0",
         description="Pick a named object from the workspace",
         embodiment_compat=["arm", "humanoid"],
         safety_class=SafetyClass.HIGH,
         required_tools=[
             "perception.detect_objects",
-            "grasp.estimate_pose",
-            "robot_sdk.execute_action",
+            ROBOT_SDK_REACTIVE_GRASP,
         ],
         tags=["manipulation", "pick"],
     )
@@ -55,39 +54,28 @@ class PickSkill:
         if not detect.success:
             return _fail(subtask, detect.error or "detection failed")
 
-        grasp = await tools.get("grasp.estimate_pose").invoke(
-            {"detections": detect.output or {}, "object_name": object_name},
-            tool_ctx,
-        )
-        if not grasp.success:
-            return _fail(subtask, grasp.error or "grasp estimation failed")
-
-        pose: list[float] = (grasp.output or {}).get("pose", [0.5, 0.0, 0.3, 0.0, 0.0, 0.0])
-        act = await tools.get("robot_sdk.execute_action").invoke(
+        grasp = await tools.get(ROBOT_SDK_REACTIVE_GRASP).invoke(
             {
                 "robot_id": robot_id,
-                "command_type": "cartesian",
-                "values": pose,
-                "gripper_close": True,
+                "target_hint": {"kind": "phrase", "phrase": object_name},
             },
             tool_ctx,
         )
 
-        skill_result: SkillResult
-        if act.success:
-            skill_result = SkillResult(
+        if grasp.success:
+            result = SkillResult(
                 skill_name="pick",
-                skill_version="0.1.0",
+                skill_version="0.2.0",
                 subtask_id=subtask.subtask_id,
                 success=True,
                 outcome="success",
-                artifacts={"picked_object": object_name, "pose": pose},
+                artifacts={"picked_object": object_name, "grasp_result": grasp.output or {}},
             )
         else:
-            skill_result = _fail(subtask, act.error or "action dispatch failed")
+            result = _fail(subtask, grasp.error or "reactive grasp failed")
 
-        await _write_episode(ctx, subtask, skill_result, object_name)
-        return skill_result
+        await _write_episode(ctx, subtask, result, object_name)
+        return result
 
     async def rollback(self, ctx: Any) -> None:
         pass
@@ -96,10 +84,9 @@ class PickSkill:
 def _fail(subtask: Subtask, message: str) -> SkillResult:
     return SkillResult(
         skill_name="pick",
-        skill_version="0.1.0",
+        skill_version="0.2.0",
         subtask_id=subtask.subtask_id,
         success=False,
-        outcome="failure",
         message=message,
     )
 
