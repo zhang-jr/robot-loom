@@ -130,7 +130,10 @@ class Tracer:
         if getattr(config, "trace_sink", "stderr") == "file":
             path = getattr(config, "trace_file", "")
             if path:
+                old = self._sink
                 self._sink = open(path, "a", encoding="utf-8")
+                if old is not sys.stderr:
+                    old.close()
         endpoint = getattr(config, "otel_endpoint", "")
         if endpoint:
             self.configure_otel(endpoint)

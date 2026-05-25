@@ -36,8 +36,6 @@ class SpatialHubMemory:
                 return await self.episodic.write(entry)
             case "semantic":
                 return await self.semantic.upsert(entry)
-            case _:
-                return await self.episodic.write(entry)
 
     async def query(self, q: MemoryQuery) -> list[MemoryHit]:
         """Route a query to the appropriate sub-memory."""
@@ -50,5 +48,3 @@ class SpatialHubMemory:
                 return await self.episodic.query(q)
             case "semantic":
                 return await self.semantic.query(q)
-            case _:
-                return []

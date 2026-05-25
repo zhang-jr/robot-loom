@@ -162,6 +162,37 @@ class LiteLLMBrain:
             {"role": "user", "content": content},
         ]
 
+    _GIVE_UP_PHRASES = (
+        "i give up",
+        "i'm giving up",
+        "giving up on this task",
+        "cannot complete this task",
+        "unable to complete this task",
+        "this task is impossible",
+        "task cannot be completed",
+    )
+    _CONTINUATION_MARKERS = (
+        "try",
+        "attempt",
+        "instead",
+        "alternative",
+        "different approach",
+        "retry",
+        "plan b",
+        "another way",
+        "let me",
+    )
+
+    @classmethod
+    def _is_give_up(cls, text: str) -> bool:
+        """Detect explicit give-up intent without false-positiving on retry language."""
+        lower = text.lower()
+        has_give_up = any(phrase in lower for phrase in cls._GIVE_UP_PHRASES)
+        if not has_give_up:
+            return False
+        has_continuation = any(marker in lower for marker in cls._CONTINUATION_MARKERS)
+        return not has_continuation
+
     def _parse_response(self, response: Any, trace_id: str) -> BrainDecision:
         try:
             choice = response.choices[0]
@@ -201,7 +232,7 @@ class LiteLLMBrain:
         finish = getattr(choice, "finish_reason", "stop")
 
         if finish == "stop" or text:
-            if any(kw in text.lower() for kw in ("give up", "cannot", "unable", "impossible")):
+            if self._is_give_up(text):
                 return BrainDecision(
                     decision_type="give_up",
                     message=text,

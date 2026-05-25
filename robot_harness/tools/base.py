@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
@@ -112,10 +112,13 @@ class ToolFilter(BaseModel):
     tags: list[str] = []
 
 
+BrainProfileName = Literal["openai", "anthropic", "mcp", "litellm"]
+
+
 class BrainProfile(BaseModel):
     """Describes which tool-spec format a Brain backend expects."""
 
-    name: str  # 'openai' | 'anthropic' | 'mcp'
+    name: BrainProfileName
     supports_native_reflection: bool = True  # False → register ReflectionTool
 
 

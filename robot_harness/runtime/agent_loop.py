@@ -12,6 +12,7 @@ Phase 2 additions:
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any, Literal
 
@@ -28,7 +29,7 @@ from robot_harness.brain.base import (
 from robot_harness.critic.base import Critic, CriticVerdict
 from robot_harness.critic.heuristic_fallback import HeuristicCritic
 from robot_harness.critic.replan_policy import ReplanPolicy, SensorHeuristic
-from robot_harness.embodiment.base import Frame
+from robot_harness.embodiment.base import EmbodimentCommand, Frame
 from robot_harness.errors import (
     CriticDisagreementError,
     CriticServiceDown,
@@ -190,9 +191,9 @@ class AgentLoop:
 
                 # --- Critic evaluation (every critic_interval turns) ---
                 if active_critic and turn % self._critic_interval == 0:
-                    dummy_frame = Frame(camera="wrist", robot_id=task.robot_id)
+                    frame = await self._ctx.get_camera_frame(task.robot_id)
                     verdict, active_critic, heuristic_critic = await self._run_critic(
-                        active_critic, heuristic_critic, dummy_frame, task, trace_id
+                        active_critic, heuristic_critic, frame, task, trace_id
                     )
 
                     if verdict is not None:
@@ -350,8 +351,14 @@ class AgentLoop:
                     tags=["episode", result.outcome, task.robot_id],
                 )
             )
-        except Exception:  # noqa: BLE001
-            pass  # memory write is best-effort
+        except Exception as exc:  # noqa: BLE001
+            tracer.event(
+                "memory.write_failed",
+                trace_id=trace_id,
+                robot_id=task.robot_id,
+                memory_type="episodic",
+                error=str(exc),
+            )
 
     async def _write_critic_verdict(
         self, task: Task, verdict: CriticVerdict, trace_id: str
@@ -372,8 +379,14 @@ class AgentLoop:
                     tags=["critic_verdict", verdict.state, task.robot_id],
                 )
             )
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            tracer.event(
+                "memory.write_failed",
+                trace_id=trace_id,
+                robot_id=task.robot_id,
+                memory_type="episodic",
+                error=str(exc),
+            )
 
     async def _query_memory(self, task: Task) -> MemoryView:
         """Query all memory types for context relevant to the task (best-effort)."""
@@ -383,15 +396,25 @@ class AgentLoop:
                 MemoryQuery(memory_type="episodic", robot_id=task.robot_id, text=task.description)
             )
             view.episodic_hits = [h.model_dump() for h in episodic]
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            tracer.event(
+                "memory.query_failed",
+                robot_id=task.robot_id,
+                memory_type="episodic",
+                error=str(exc),
+            )
         try:
             semantic = await self._ctx.memory.query(
                 MemoryQuery(memory_type="semantic", robot_id=task.robot_id, text=task.description)
             )
             view.semantic_hits = [h.model_dump() for h in semantic]
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            tracer.event(
+                "memory.query_failed",
+                robot_id=task.robot_id,
+                memory_type="semantic",
+                error=str(exc),
+            )
         return view
 
     # ------------------------------------------------------------------
@@ -404,8 +427,7 @@ class AgentLoop:
         task: Task,
         trace_id: str,
     ) -> list[dict[str, Any]]:
-        results: list[dict[str, Any]] = []
-        for req in requests:
+        async def _run_one(req: ToolCallRequest) -> dict[str, Any]:
             tool_ctx = ToolContext(
                 trace_id=trace_id,
                 robot_id=task.robot_id,
@@ -413,8 +435,14 @@ class AgentLoop:
                 timeout_s=self._ctx.config.tool.default_timeout_s,
             )
             result = await self._invoke_tool(req, tool_ctx)
-            results.append(result.model_dump())
-        return results
+            return result.model_dump()
+
+        gathered = await asyncio.gather(*[_run_one(r) for r in requests])
+        return list(gathered)
+
+    def _needs_safety_check(self, tool_name: str) -> bool:
+        """Hardware-dispatching tools must pass SafetyEnvelope before invocation."""
+        return tool_name == "robot_sdk.execute_action"
 
     async def _invoke_tool(self, req: ToolCallRequest, ctx: ToolContext) -> ToolResult:
         try:
@@ -426,6 +454,25 @@ class AgentLoop:
                 success=False,
                 error=str(exc),
                 error_type=type(exc).__name__,
+            )
+
+        # Safety check for hardware-dispatching tools.
+        # SafetyEnvelopeViolation is NOT caught — it propagates to trigger e-stop.
+        if self._needs_safety_check(req.tool_name):
+            cmd = EmbodimentCommand(
+                robot_id=req.args.get("robot_id", ctx.robot_id),
+                command_type=req.args.get("command_type", "joint"),
+                values=req.args.get("values", []),
+                extra={
+                    k: v
+                    for k, v in req.args.items()
+                    if k not in ("robot_id", "command_type", "values")
+                },
+            )
+            await self._ctx.safety_envelope.check(
+                cmd,
+                trace_id=ctx.trace_id,
+                subtask_id=ctx.subtask_id,
             )
 
         try:

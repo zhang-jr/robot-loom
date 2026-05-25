@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from robot_harness.errors import (
@@ -116,7 +117,9 @@ class SkillRegistry:
         desc_lower = subtask_description.lower()
         for name in list(self._active):
             skill = self._store[name].get(self._active[name])
-            if skill and any(tag in desc_lower for tag in skill.manifest.tags):
+            if skill and any(
+                re.search(rf"\b{re.escape(tag)}\b", desc_lower) for tag in skill.manifest.tags
+            ):
                 return skill
         return None
 

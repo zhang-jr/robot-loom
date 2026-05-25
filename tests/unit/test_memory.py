@@ -159,8 +159,7 @@ async def test_spatial_hub_routes_queries_correctly() -> None:
 
 
 @pytest.mark.asyncio
-async def test_spatial_hub_unknown_type_falls_back_to_episodic() -> None:
-    hub = SpatialHubMemory()
-    # Should not raise — falls back to episodic
-    mid = await hub.write(_entry("unknown_type", {"data": "x"}))
-    assert isinstance(mid, str)
+async def test_spatial_hub_unknown_type_rejected_at_boundary() -> None:
+    """Invalid memory_type is rejected by Pydantic validation, not silently routed."""
+    with pytest.raises(Exception):  # noqa: B017  — ValidationError
+        _entry("unknown_type", {"data": "x"})

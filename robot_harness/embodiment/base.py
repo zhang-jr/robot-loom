@@ -86,6 +86,21 @@ class EmbodimentCommand(BaseModel):
     "approach until grasp succeeds"), do NOT model them here — expose them as
     robot_sdk tools that wrap the per-robot agent_server's verb endpoints, so
     the loop runs on-robot and the harness only observes the completion event.
+
+    values layout per command_type (safety layer depends on this):
+      - joint      : [pos_0, pos_1, ..., pos_N]  (radians, N = DOF)
+      - cartesian  : [x, y, z, ...]  (meters; orientation repr is adapter-specific)
+      - delta      : [dx, dy, dz, ...] (meters/radians, same length as cartesian)
+      - locomotion : adapter-specific; no safety-layer interpretation yet
+      - hand_grasp : [width_or_ratio]  (0=open, 1=closed; extra for force params)
+
+    TODO: add Pydantic validator for values length per command_type when the
+          second adapter type (humanoid / mobile) lands — currently only
+          generic_6dof exists so no layout conflicts arise yet.
+    TODO: promote ``frame`` to an optional typed field when the safety layer
+          needs coordinate-frame-aware validation for cartesian commands.
+    TODO: add ``locomotion_mode: Literal["pose", "twist"]`` when a
+          mobile / quadruped adapter lands.
     """
 
     robot_id: str
