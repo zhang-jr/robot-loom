@@ -7,6 +7,7 @@ from collections.abc import Callable, Coroutine
 from typing import Any
 
 from robot_harness.bus.events import HarnessEvent
+from robot_harness.observability.tracer import tracer
 
 _Handler = Callable[[HarnessEvent], Coroutine[Any, Any, None]]
 
@@ -36,8 +37,14 @@ class EventBus:
             for handler in self._handlers:
                 try:
                     await handler(event)
-                except Exception:  # noqa: BLE001
-                    pass  # handler errors must not crash the bus
+                except Exception as exc:  # noqa: BLE001
+                    tracer.event(
+                        "bus.handler_error",
+                        event_type=event.event_type,
+                        handler=handler.__qualname__,
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    )
             self._queue.task_done()
 
     def stop(self) -> None:
