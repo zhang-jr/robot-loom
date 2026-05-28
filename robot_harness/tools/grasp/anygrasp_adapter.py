@@ -12,8 +12,8 @@ from robot_harness.tools.schema import ToolBackend, ToolSchema
 class AnyGraspTool:
     """Mock grasp pose estimation tool.
 
-    Phase 1: returns a synthetic 6-DOF grasp pose without contacting any server.
-    Phase 2: will POST to an external AnyGrasp / GraspAnything server.
+    Currently returns a synthetic 6-DOF grasp pose without contacting any server.
+    TODO: POST to an external AnyGrasp / GraspAnything server.
     """
 
     name = "grasp.estimate_pose"

@@ -1,6 +1,6 @@
 """Structured tracer — JSON-stderr default, upgradeable to OpenTelemetry.
 
-Call-site API is unchanged from Phase 1::
+Call-site API::
 
     from robot_harness.observability.tracer import tracer
 
@@ -13,8 +13,8 @@ Enable OTel by calling ``tracer.configure_otel(endpoint=...)`` or via::
     tracer.init_from_config(config.observability)
 
 When the OTLP endpoint is set, spans are exported as real OTel spans and
-``event()`` adds OTel events on the current span.  Without an endpoint the
-tracer falls back to newline-delimited JSON on stderr (same as Phase 1).
+``event()`` adds OTel events on the current span. Without an endpoint the
+tracer falls back to newline-delimited JSON on stderr.
 """
 
 from __future__ import annotations

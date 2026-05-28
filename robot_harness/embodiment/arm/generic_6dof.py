@@ -1,7 +1,8 @@
 """Generic6DofArm — mock EmbodimentAdapter for a 6/7-DOF robot arm.
 
-Phase 1: in-process stub that satisfies the EmbodimentAdapter Protocol.
-Phase 2: will delegate to HttpAgentServerClient for real hardware.
+Currently an in-process stub that satisfies the EmbodimentAdapter Protocol.
+TODO: delegate to HttpAgentServerClient once a real per-robot agent_server is
+running.
 """
 
 from __future__ import annotations

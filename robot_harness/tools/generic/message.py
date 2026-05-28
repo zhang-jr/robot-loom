@@ -1,7 +1,7 @@
 """SendMessageTool — generic log/notification tool (NativeTool).
 
-Phase 1: writes to the structured tracer.
-Phase 2: will route to configured channels (Telegram / Feishu / Discord).
+Currently writes to the structured tracer.
+TODO: route to configured channels (Telegram / Feishu / Discord).
 """
 
 from __future__ import annotations

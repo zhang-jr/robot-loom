@@ -9,9 +9,9 @@ from robot_harness.memory.base import MemoryEntry, MemoryHit, MemoryId, MemoryQu
 
 
 class InMemoryObjectMemory:
-    """Phase 1 stub: dict-backed in-process object memory.
+    """Dict-backed in-process object memory stub.
 
-    Phase 2 will replace this with an adapter to an external SpatialMemory server.
+    TODO: replace with an adapter to an external SpatialMemory server.
     """
 
     def __init__(self) -> None:

@@ -1,8 +1,7 @@
 """MCPServer — exposes the harness itself as an MCP server (reverse direction).
 
-Phase 1: interface stub.
-Phase 2: will implement the full MCP server protocol so external agents can
-call harness tools via MCP (ADR-002).
+Currently an interface stub. TODO: implement the full MCP server protocol so
+external agents can call harness tools via MCP (ADR-002).
 """
 
 from __future__ import annotations
@@ -19,7 +18,7 @@ class HarnessMCPServer:
     connect to this server and call any registered tool as if it were a
     native MCP tool.
 
-    Phase 2 implementation notes:
+    Implementation notes for when this is wired in:
     - Use the official MCP Python SDK server primitives.
     - Expose all tools in ToolRegistry via ``tools/list`` and ``tools/call``.
     - Expose SkillManifests via ``prompts/list`` (MCP prompt primitive).

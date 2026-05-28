@@ -15,7 +15,7 @@ URL scheme conventions:
 
 Per-call sessions keep the implementation simple and stateless.  Production
 deployments that need lower latency should wrap a long-lived ``MCPClientSession``
-externally (TODO: connection pool, tracked in Phase 2 follow-up).
+externally (TODO: connection pool).
 """
 
 from __future__ import annotations
@@ -184,7 +184,7 @@ class MCPTool:
 
     A fresh :class:`MCPClientSession` is opened per ``invoke`` call.  This keeps
     the implementation stateless and easy to reason about; long-running
-    deployments should layer a connection pool on top (TODO: Phase 2 follow-up).
+    deployments should layer a connection pool on top (TODO: connection pool).
 
     Args:
         tool_name: Tool identifier as published by the MCP server (must match).

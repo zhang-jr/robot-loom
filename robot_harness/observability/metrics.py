@@ -1,6 +1,6 @@
 """Prometheus metrics — real when prometheus_client is installed, noops otherwise.
 
-Phase 2: live metrics with per-robot / per-skill / per-tool label dimensions.
+Emits live metrics with per-robot / per-skill / per-tool label dimensions.
 Export via the built-in HTTP server or mount on the FastAPI /metrics endpoint.
 
 Install: pip install prometheus-client

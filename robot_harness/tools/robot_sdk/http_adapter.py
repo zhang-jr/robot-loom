@@ -31,8 +31,8 @@ class RobotSdkTool:
         repeatedly invoking this tool — wrap them as a reactive verb on the
         agent_server instead (separate tool in this package).
 
-    Phase 1: simulates command dispatch without contacting any hardware.
-    Phase 2: will POST EmbodimentCommand to a per-robot HTTP/WebSocket agent_server.
+    Currently simulates command dispatch without contacting any hardware.
+    TODO: POST EmbodimentCommand to a per-robot HTTP/WebSocket agent_server.
     """
 
     name = "robot_sdk.execute_action"

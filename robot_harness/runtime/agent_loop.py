@@ -3,7 +3,7 @@
 Orchestrates: Brain.decide() → tool dispatch (with safety check) → result
 → Brain (next turn), repeating until completion or give_up.
 
-Phase 2 additions:
+Wired in:
 - Optional Critic integration with ReplanPolicy (ADR-010)
 - EpisodicMemory write-back on task completion
 - Multi-type memory query (object / place / episodic / semantic)

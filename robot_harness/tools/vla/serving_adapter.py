@@ -12,9 +12,9 @@ from robot_harness.tools.schema import ToolBackend, ToolSchema
 class VlaServingTool:
     """Mock VLA (Vision-Language-Action) inference tool.
 
-    Phase 1: returns a synthetic joint-space action without contacting any server.
-    Phase 2: will POST observation + instruction to an external VLA serving runtime
-             (e.g. OpenVLA, RoboFlamingo, π0) over HTTP/WebSocket.
+    Currently returns a synthetic joint-space action without contacting any server.
+    TODO: POST observation + instruction to an external VLA serving runtime
+    (e.g. OpenVLA, RoboFlamingo, π0) over HTTP/WebSocket.
     """
 
     name = "vla.infer_action"
