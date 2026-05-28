@@ -1,7 +1,7 @@
 """SpatialHubMemory — mock adapter for an external SpatialMemory-like server.
 
-Phase 1: in-process stub backed by InMemory* implementations.
-Phase 2: will issue HTTP requests to a self-hosted SpatialMemory server.
+Currently an in-process facade backed by InMemory* implementations.
+TODO: issue HTTP requests to a self-hosted SpatialMemory server.
 """
 
 from __future__ import annotations

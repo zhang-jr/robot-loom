@@ -1,7 +1,7 @@
 """Joint limit checker extracted from SafetyEnvelope.
 
-Phase 1: basic ±limit check per joint.
-Phase 2: will add per-robot URDF-based limits.
+Currently a basic ±limit check per joint.
+TODO: add per-robot URDF-based limits.
 """
 
 from __future__ import annotations

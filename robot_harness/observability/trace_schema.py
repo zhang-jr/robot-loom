@@ -1,8 +1,8 @@
 """Trace and episode-buffer schemas.
 
-Fields are designed from Phase 1 to accommodate data backflow to VLA /
-VLM-policy training (ADR-013).  Training pipeline is NOT implemented here;
-only the schema is pinned so downstream consumers can rely on it.
+Fields are designed to accommodate data backflow to VLA / VLM-policy training
+(ADR-013). Training pipeline is NOT implemented here; only the schema is
+pinned so downstream consumers can rely on it.
 """
 
 from __future__ import annotations

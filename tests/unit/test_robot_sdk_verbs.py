@@ -61,7 +61,7 @@ def test_factory_tools_register_into_registry() -> None:
 
 
 def test_verb_classes_use_native_backend() -> None:
-    """Phase 2 mocks; Phase 3 will swap to HTTP/WS on real agent_server."""
+    """Verbs run native (in-process) until the on-robot agent_server HTTP/WS transport lands."""
     for tool in build_robot_sdk_verb_tools():
         assert tool.backend == "native"
 

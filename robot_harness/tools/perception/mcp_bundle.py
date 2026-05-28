@@ -1,12 +1,11 @@
 """Perception tool bundle backed by an external MCP server.
 
-The recipe-aligned tool contracts live here so that the harness fails fast at
-startup if the configured perception server doesn't actually publish the tools
-this harness expects.  The companion server is the ``perception-triton`` recipe
-(see https://github.com/<org>/robot-loom-recipes); any other MCP server that
-publishes the same tool names + schemas is a drop-in substitute.
+The tool contracts live here so that the harness fails fast at startup if the
+configured perception server doesn't actually publish the tools this harness
+expects. Any MCP server publishing the same tool names + schemas is a drop-in
+substitute.
 
-Tool name namespace: ``perception.*``.  Names are stable; schemas may grow
+Tool name namespace: ``perception.*``. Names are stable; schemas may grow
 backward-compatible fields over time.
 """
 
@@ -24,19 +23,18 @@ from robot_harness.tools.mcp.client import MCPClientSession, MCPTool
 PERCEPTION_DETECT_OBJECTS = "perception.detect_objects"
 PERCEPTION_ESTIMATE_DEPTH = "perception.estimate_depth"
 PERCEPTION_GROUND_PHRASE = "perception.ground_phrase"
-PERCEPTION_SEGMENT_PROMPTABLE = "perception.segment_promptable"  # Phase B
+PERCEPTION_SEGMENT_PROMPTABLE = "perception.segment_promptable"
 
-PHASE_A_TOOL_NAMES: tuple[str, ...] = (
+PERCEPTION_TOOL_NAMES: tuple[str, ...] = (
     PERCEPTION_DETECT_OBJECTS,
     PERCEPTION_ESTIMATE_DEPTH,
     PERCEPTION_GROUND_PHRASE,
+    PERCEPTION_SEGMENT_PROMPTABLE,
 )
-
-PHASE_B_TOOL_NAMES: tuple[str, ...] = (PERCEPTION_SEGMENT_PROMPTABLE,)
 
 
 # ---------------------------------------------------------------------------
-# Schemas (recipe-aligned — see docs/shared/perception-triton-recipe.md §6)
+# Schemas
 # ---------------------------------------------------------------------------
 
 _BBOX_SCHEMA = {
@@ -174,23 +172,13 @@ _SEGMENT_PROMPTABLE_OUTPUT: dict[str, Any] = {
 # ---------------------------------------------------------------------------
 
 
-def build_perception_tools(
-    server_url: str,
-    *,
-    include_phase_b: bool = False,
-) -> list[MCPTool]:
+def build_perception_tools(server_url: str) -> list[MCPTool]:
     """Construct the perception MCPTool set pointed at ``server_url``.
 
-    Args:
-        server_url: MCP transport URL (see :class:`MCPClientSession`).
-        include_phase_b: Include Phase B tools (currently just
-            ``perception.segment_promptable``).  Off by default until the
-            server-side ensemble is ready.
-
-    Returns:
-        Tools ready to register with a :class:`ToolRegistry`.
+    Returns the four ``perception.*`` tools (detect / depth / ground / segment),
+    ready to register with a :class:`ToolRegistry`.
     """
-    tools: list[MCPTool] = [
+    return [
         MCPTool(
             tool_name=PERCEPTION_DETECT_OBJECTS,
             description=(
@@ -224,35 +212,29 @@ def build_perception_tools(
             server_url=server_url,
             is_idempotent=True,
         ),
+        MCPTool(
+            tool_name=PERCEPTION_SEGMENT_PROMPTABLE,
+            description=(
+                "Promptable segmentation. Returns a binary PNG mask for the region of "
+                "the image matching the given phrase, plus an enclosing bbox."
+            ),
+            input_schema=_SEGMENT_PROMPTABLE_INPUT,
+            output_schema=_SEGMENT_PROMPTABLE_OUTPUT,
+            server_url=server_url,
+            is_idempotent=True,
+        ),
     ]
-
-    if include_phase_b:
-        tools.append(
-            MCPTool(
-                tool_name=PERCEPTION_SEGMENT_PROMPTABLE,
-                description=(
-                    "Promptable segmentation. Returns a binary mask for the region "
-                    "of the image matching the given phrase (Grounding-DINO + SAM2 ensemble)."
-                ),
-                input_schema=_SEGMENT_PROMPTABLE_INPUT,
-                output_schema=_SEGMENT_PROMPTABLE_OUTPUT,
-                server_url=server_url,
-                is_idempotent=True,
-            )
-        )
-
-    return tools
 
 
 async def verify_server_compatibility(
     session: MCPClientSession,
     *,
-    expected_names: tuple[str, ...] = PHASE_A_TOOL_NAMES,
+    expected_names: tuple[str, ...] = PERCEPTION_TOOL_NAMES,
 ) -> None:
     """Fail-fast check that ``session``'s server publishes ``expected_names``.
 
     Call this at harness startup, after constructing the tools but before
-    starting the agent loop.  Raises :class:`ToolBackendUnreachableError` with
+    starting the agent loop. Raises :class:`ToolBackendUnreachableError` with
     the missing names if the server's catalogue is incomplete.
     """
     result = await session.list_tools()

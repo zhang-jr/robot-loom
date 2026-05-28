@@ -5,8 +5,8 @@ talks to an external on-robot agent_server that owns all real-time control.
 Everything in this file is a thin transport — no control logic, no calibration,
 no servoing loops.
 
-Phase 1: urllib-based stub that returns mock responses.
-Phase 2: will use aiohttp or httpx with proper connection pooling.
+Currently a stub that returns mock responses. TODO: real HTTP client with
+connection pooling (aiohttp or httpx) when an on-robot agent_server is wired in.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ class HttpAgentServerClient:
     - GET  /state     — retrieve current RobotState
     - GET  /camera/{id} — retrieve latest camera frame
 
-    Phase 1: all methods return mock data without network calls.
+    Currently all methods return mock data without network calls.
     """
 
     def __init__(self, base_url: str, robot_id: str, timeout_s: float = 5.0) -> None:
@@ -31,7 +31,7 @@ class HttpAgentServerClient:
         self._timeout_s = timeout_s
 
     async def get_state(self) -> dict[str, Any]:
-        # Phase 2: GET {base_url}/state
+        # TODO: GET {base_url}/state
         return {
             "robot_id": self._robot_id,
             "joint_positions": [0.0] * 7,
@@ -41,7 +41,7 @@ class HttpAgentServerClient:
         }
 
     async def get_camera_frame(self, camera: str) -> dict[str, Any]:
-        # Phase 2: GET {base_url}/camera/{camera}
+        # TODO: GET {base_url}/camera/{camera}
         return {
             "camera": camera,
             "robot_id": self._robot_id,
@@ -50,7 +50,7 @@ class HttpAgentServerClient:
         }
 
     async def dispatch(self, cmd: dict[str, Any]) -> dict[str, Any]:
-        # Phase 2: POST {base_url}/dispatch with cmd payload
+        # TODO: POST {base_url}/dispatch with cmd payload
         import uuid
 
         return {
@@ -60,5 +60,5 @@ class HttpAgentServerClient:
         }
 
     async def safety_check(self, cmd: dict[str, Any]) -> dict[str, Any]:
-        # Phase 2: POST {base_url}/safety_check with cmd payload
+        # TODO: POST {base_url}/safety_check with cmd payload
         return {"passed": True, "reason": "mock", "violated_rules": []}
