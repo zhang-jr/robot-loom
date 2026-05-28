@@ -1,4 +1,4 @@
-"""Built-in PickSkill — perceive → reactive grasp via on-robot verb."""
+"""Built-in PickSkill — hand off intent to the on-robot reactive grasp verb."""
 
 from __future__ import annotations
 
@@ -12,23 +12,21 @@ from robot_harness.tools.robot_sdk.verbs import ROBOT_SDK_REACTIVE_GRASP
 
 
 class PickSkill:
-    """Pick an object from the workspace.
+    """Pick a named object from the workspace.
 
-    Tool call sequence:
-    1. perception.detect_objects  — find the target object
-    2. robot_sdk.reactive_grasp   — on-robot verb handles approach + grasp
+    Per ADR-019, the on-robot agent_server owns the 5-30 Hz perception-action
+    loop. This skill just hands the high-level intent (a phrase) to
+    ``robot_sdk.reactive_grasp`` and awaits a single CompletionVerdict — it
+    does NOT run harness-side detection or compute bounding boxes.
     """
 
     manifest = SkillManifest(
         name="pick",
-        version="0.2.0",
+        version="0.3.0",
         description="Pick a named object from the workspace",
         embodiment_compat=["arm", "humanoid"],
         safety_class=SafetyClass.HIGH,
-        required_tools=[
-            "perception.detect_objects",
-            ROBOT_SDK_REACTIVE_GRASP,
-        ],
+        required_tools=[ROBOT_SDK_REACTIVE_GRASP],
         tags=["manipulation", "pick"],
     )
 
@@ -44,15 +42,7 @@ class PickSkill:
     ) -> SkillResult:
         robot_id = subtask.robot_id
         object_name = subtask.parameters.get("object_name", "object")
-
         tool_ctx = ToolContext.create(robot_id, subtask_id=subtask.subtask_id)
-
-        detect = await tools.get("perception.detect_objects").invoke(
-            {"image_source": "wrist_camera", "query": object_name},
-            tool_ctx,
-        )
-        if not detect.success:
-            return _fail(subtask, detect.error or "detection failed")
 
         grasp = await tools.get(ROBOT_SDK_REACTIVE_GRASP).invoke(
             {
@@ -65,7 +55,7 @@ class PickSkill:
         if grasp.success:
             result = SkillResult(
                 skill_name="pick",
-                skill_version="0.2.0",
+                skill_version="0.3.0",
                 subtask_id=subtask.subtask_id,
                 success=True,
                 outcome="success",
@@ -84,7 +74,7 @@ class PickSkill:
 def _fail(subtask: Subtask, message: str) -> SkillResult:
     return SkillResult(
         skill_name="pick",
-        skill_version="0.2.0",
+        skill_version="0.3.0",
         subtask_id=subtask.subtask_id,
         success=False,
         message=message,
