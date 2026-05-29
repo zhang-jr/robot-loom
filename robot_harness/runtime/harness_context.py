@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from robot_harness.config.schema import HarnessConfig
 from robot_harness.embodiment.base import EmbodimentAdapter, Frame
-from robot_harness.memory.base import Memory, NullMemory
+from robot_harness.memory.base import Memory
 from robot_harness.safety.envelope import SafetyEnvelope
 from robot_harness.skill.registry import SkillRegistry
 from robot_harness.tools.base import BrainProfile, ToolRegistry
@@ -101,6 +101,7 @@ class HarnessContext:
     ) -> HarnessContext:
         """Convenience factory — wires up default implementations."""
         from robot_harness.config.loader import load_config
+        from robot_harness.tools.memory.backend import build_memory
 
         cfg = config or load_config()
         tool_registry = ToolRegistry()
@@ -112,5 +113,5 @@ class HarnessContext:
             tool_registry=tool_registry,
             skill_registry=skill_registry,
             safety_envelope=safety_envelope,
-            memory=memory or NullMemory(),
+            memory=memory or build_memory(cfg.memory, fleet_size=cfg.fleet_size),
         )

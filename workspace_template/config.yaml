@@ -57,6 +57,18 @@ safety:
   workspace_bounds_m: [-2.0, -2.0, 0.0, 2.0, 2.0, 2.0]   # [xmin ymin zmin xmax ymax zmax]
 
 # ---------------------------------------------------------------------------
+# Memory backend.
+#   null     — nothing is stored; queries return empty.
+#   embedded — in-process store; not shared across robots, lost on restart.
+#   external — remote server over HTTP; shared across robots, durable.
+#              Set server_url and use this for any fleet_size > 1.
+# ---------------------------------------------------------------------------
+memory:
+  backend: embedded
+  server_url: ""                # required when backend: external
+  request_timeout_s: 10.0
+
+# ---------------------------------------------------------------------------
 # Observability.
 # ---------------------------------------------------------------------------
 observability:
