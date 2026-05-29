@@ -9,12 +9,19 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
 from robot_harness.errors import ToolNotFoundError, ToolSchemaViolationError
 from robot_harness.tools.schema import ToolBackend, ToolSchema
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from robot_harness.embodiment.base import EmbodimentCommand
+
+    SafetyCommandBuilder = Callable[[dict[str, Any], "ToolContext"], "EmbodimentCommand | None"]
 
 
 @dataclass
@@ -82,6 +89,13 @@ class Tool(Protocol):
     ``name``, ``schema``, ``backend`` are declared as read-only properties so
     that concrete implementations may satisfy the Protocol with either a plain
     class variable (readable) or an ``@property`` (read-only).
+
+    A tool that actuates the robot also exposes:
+    - ``hardware_bound = True`` — the registry gates it behind SafetyEnvelope.
+    - ``to_safety_command(args, ctx) -> EmbodimentCommand | None`` — maps the
+      call to the high-level command the envelope validates (pose reachability,
+      workspace bounds). Returning None means the call carries no
+      harness-checkable target and the on-robot reflex is authoritative.
     """
 
     @property
@@ -134,10 +148,34 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
+        self._safety_gated: dict[str, SafetyCommandBuilder | None] = {}
 
     def register(self, tool: Tool) -> None:
-        """Register a tool; silently overwrites an existing entry with the same name."""
+        """Register a tool; silently overwrites an existing entry with the same name.
+
+        Tools that actuate the robot (``hardware_bound``) are recorded so the
+        AgentLoop runs SafetyEnvelope.check() before invoking them.
+        """
+        if getattr(tool, "hardware_bound", False):
+            self._safety_gated[tool.name] = getattr(tool, "to_safety_command", None)
         self._tools[tool.name] = tool
+
+    def requires_safety_check(self, name: str) -> bool:
+        """True if *name* actuates the robot and must pass SafetyEnvelope first."""
+        return name in self._safety_gated
+
+    def build_safety_command(
+        self, name: str, args: dict[str, Any], ctx: ToolContext
+    ) -> EmbodimentCommand | None:
+        """Build the EmbodimentCommand a hardware-bound tool validates against.
+
+        Returns None when the call carries no harness-checkable target; the
+        on-robot safety reflex is then the authoritative check.
+        """
+        builder = self._safety_gated.get(name)
+        if builder is None:
+            return None
+        return builder(args, ctx)
 
     def get(self, name: str) -> Tool:
         """Return the tool or raise :exc:`ToolNotFoundError`."""

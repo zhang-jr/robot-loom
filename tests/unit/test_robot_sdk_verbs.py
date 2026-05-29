@@ -18,12 +18,14 @@ from robot_harness.tools.base import ToolContext, ToolRegistry
 from robot_harness.tools.robot_sdk import (
     COMPLETION_VERDICT_SCHEMA,
     ROBOT_SDK_HOME,
+    ROBOT_SDK_LOCOMOTE_TO,
     ROBOT_SDK_MOVE_TO_POSE,
     ROBOT_SDK_REACTIVE_GRASP,
     ROBOT_SDK_VISUAL_SERVO_TO,
     VERB_TOOL_NAMES,
     CompletionVerdict,
     HomeTool,
+    LocomoteToTool,
     MoveToPoseTool,
     ReactiveGraspTool,
     VisualServoToTool,
@@ -40,7 +42,7 @@ def _ctx() -> ToolContext:
 # ---------------------------------------------------------------------------
 
 
-def test_factory_returns_all_four_verbs() -> None:
+def test_factory_returns_all_verbs() -> None:
     tools = build_robot_sdk_verb_tools()
     names = [t.name for t in tools]
     assert names == list(VERB_TOOL_NAMES)
@@ -48,6 +50,7 @@ def test_factory_returns_all_four_verbs() -> None:
         ROBOT_SDK_REACTIVE_GRASP,
         ROBOT_SDK_VISUAL_SERVO_TO,
         ROBOT_SDK_MOVE_TO_POSE,
+        ROBOT_SDK_LOCOMOTE_TO,
         ROBOT_SDK_HOME,
     }
 
@@ -108,7 +111,7 @@ def test_home_input_minimal() -> None:
 
 @pytest.mark.parametrize(
     "tool_cls",
-    [ReactiveGraspTool, VisualServoToTool, MoveToPoseTool, HomeTool],
+    [ReactiveGraspTool, VisualServoToTool, MoveToPoseTool, LocomoteToTool, HomeTool],
 )
 def test_every_verb_publishes_completion_verdict_fields(tool_cls: type) -> None:
     out = tool_cls.schema.output_schema

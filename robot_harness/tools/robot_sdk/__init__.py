@@ -55,6 +55,7 @@ from robot_harness.tools.robot_sdk.http_adapter import RobotSdkTool
 from robot_harness.tools.robot_sdk.verbs import (
     COMPLETION_VERDICT_SCHEMA,
     ROBOT_SDK_HOME,
+    ROBOT_SDK_LOCOMOTE_TO,
     ROBOT_SDK_MOVE_TO_POSE,
     ROBOT_SDK_REACTIVE_GRASP,
     ROBOT_SDK_VISUAL_SERVO_TO,
@@ -62,6 +63,7 @@ from robot_harness.tools.robot_sdk.verbs import (
     CompletionOutcome,
     CompletionVerdict,
     HomeTool,
+    LocomoteToTool,
     MoveToPoseTool,
     ReactiveGraspTool,
     VisualServoToTool,
@@ -71,6 +73,7 @@ from robot_harness.tools.robot_sdk.verbs import (
 __all__ = [
     "COMPLETION_VERDICT_SCHEMA",
     "ROBOT_SDK_HOME",
+    "ROBOT_SDK_LOCOMOTE_TO",
     "ROBOT_SDK_MOVE_TO_POSE",
     "ROBOT_SDK_REACTIVE_GRASP",
     "ROBOT_SDK_VISUAL_SERVO_TO",
@@ -78,6 +81,7 @@ __all__ = [
     "CompletionOutcome",
     "CompletionVerdict",
     "HomeTool",
+    "LocomoteToTool",
     "MoveToPoseTool",
     "ReactiveGraspTool",
     "RobotSdkTool",

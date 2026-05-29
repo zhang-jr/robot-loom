@@ -29,7 +29,7 @@ from robot_harness.brain.base import (
 from robot_harness.critic.base import Critic, CriticVerdict
 from robot_harness.critic.heuristic_fallback import HeuristicCritic
 from robot_harness.critic.replan_policy import ReplanPolicy, SensorHeuristic
-from robot_harness.embodiment.base import EmbodimentCommand, Frame
+from robot_harness.embodiment.base import Frame
 from robot_harness.errors import (
     CriticDisagreementError,
     CriticServiceDown,
@@ -440,10 +440,6 @@ class AgentLoop:
         gathered = await asyncio.gather(*[_run_one(r) for r in requests])
         return list(gathered)
 
-    def _needs_safety_check(self, tool_name: str) -> bool:
-        """Hardware-dispatching tools must pass SafetyEnvelope before invocation."""
-        return tool_name == "robot_sdk.execute_action"
-
     async def _invoke_tool(self, req: ToolCallRequest, ctx: ToolContext) -> ToolResult:
         try:
             tool = self._ctx.tool_registry.get(req.tool_name)
@@ -456,24 +452,17 @@ class AgentLoop:
                 error_type=type(exc).__name__,
             )
 
-        # Safety check for hardware-dispatching tools.
+        # Every tool that actuates the robot is gated behind SafetyEnvelope.
         # SafetyEnvelopeViolation is NOT caught — it propagates to trigger e-stop.
-        if self._needs_safety_check(req.tool_name):
-            cmd = EmbodimentCommand(
-                robot_id=req.args.get("robot_id", ctx.robot_id),
-                command_type=req.args.get("command_type", "joint"),
-                values=req.args.get("values", []),
-                extra={
-                    k: v
-                    for k, v in req.args.items()
-                    if k not in ("robot_id", "command_type", "values")
-                },
-            )
-            await self._ctx.safety_envelope.check(
-                cmd,
-                trace_id=ctx.trace_id,
-                subtask_id=ctx.subtask_id,
-            )
+        registry = self._ctx.tool_registry
+        if registry.requires_safety_check(req.tool_name):
+            cmd = registry.build_safety_command(req.tool_name, req.args, ctx)
+            if cmd is not None:
+                await self._ctx.safety_envelope.check(
+                    cmd,
+                    trace_id=ctx.trace_id,
+                    subtask_id=ctx.subtask_id,
+                )
 
         try:
             return await tool.invoke(req.args, ctx)

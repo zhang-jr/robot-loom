@@ -14,6 +14,7 @@ import time
 import uuid
 from typing import Any
 
+from robot_harness.embodiment.base import EmbodimentCommand
 from robot_harness.tools.base import ToolContext, ToolResult
 from robot_harness.tools.schema import ToolBackend, ToolSchema
 
@@ -80,6 +81,21 @@ class RobotSdkTool:
     @property
     def is_cancellable(self) -> bool:
         return True
+
+    @property
+    def hardware_bound(self) -> bool:
+        return True
+
+    def to_safety_command(self, args: dict[str, Any], ctx: ToolContext) -> EmbodimentCommand:
+        """Map the dispatched command directly onto the safety command."""
+        return EmbodimentCommand(
+            robot_id=args.get("robot_id", ctx.robot_id),
+            command_type=args.get("command_type", "joint"),
+            values=args.get("values", []),
+            extra={
+                k: v for k, v in args.items() if k not in ("robot_id", "command_type", "values")
+            },
+        )
 
     async def invoke(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         t0 = time.monotonic()

@@ -42,6 +42,7 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
+from robot_harness.embodiment.base import EmbodimentCommand
 from robot_harness.errors import ToolCancelledError
 from robot_harness.tools.base import ToolContext, ToolResult
 from robot_harness.tools.schema import ToolBackend, ToolSchema
@@ -53,12 +54,14 @@ from robot_harness.tools.schema import ToolBackend, ToolSchema
 ROBOT_SDK_REACTIVE_GRASP = "robot_sdk.reactive_grasp"
 ROBOT_SDK_VISUAL_SERVO_TO = "robot_sdk.visual_servo_to"
 ROBOT_SDK_MOVE_TO_POSE = "robot_sdk.move_to_pose"
+ROBOT_SDK_LOCOMOTE_TO = "robot_sdk.locomote_to"
 ROBOT_SDK_HOME = "robot_sdk.home"
 
 VERB_TOOL_NAMES: tuple[str, ...] = (
     ROBOT_SDK_REACTIVE_GRASP,
     ROBOT_SDK_VISUAL_SERVO_TO,
     ROBOT_SDK_MOVE_TO_POSE,
+    ROBOT_SDK_LOCOMOTE_TO,
     ROBOT_SDK_HOME,
 )
 
@@ -208,6 +211,18 @@ class _RobotSdkVerbTool:
     def is_cancellable(self) -> bool:
         return True
 
+    @property
+    def hardware_bound(self) -> bool:
+        return True
+
+    def to_safety_command(self, args: dict[str, Any], ctx: ToolContext) -> EmbodimentCommand | None:
+        """Expose the verb's target for pre-dispatch validation.
+
+        Default: no harness-checkable target, so the on-robot reflex is
+        authoritative. Verbs that move to a known pose override this.
+        """
+        return None
+
     async def invoke(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         t0 = time.monotonic()
         if ctx.is_cancelled:
@@ -302,6 +317,16 @@ class ReactiveGraspTool(_RobotSdkVerbTool):
         },
     )
 
+    def to_safety_command(self, args: dict[str, Any], ctx: ToolContext) -> EmbodimentCommand | None:
+        pose = args.get("approach_pose")
+        if not pose:
+            return None
+        return EmbodimentCommand(
+            robot_id=args.get("robot_id", ctx.robot_id),
+            command_type="cartesian",
+            values=list(pose),
+        )
+
     async def _simulate(self, args: dict[str, Any], ctx: ToolContext) -> CompletionVerdict:
         target = args.get("target_hint", {})
         return CompletionVerdict(
@@ -375,6 +400,16 @@ class VisualServoToTool(_RobotSdkVerbTool):
         },
     )
 
+    def to_safety_command(self, args: dict[str, Any], ctx: ToolContext) -> EmbodimentCommand | None:
+        pose = args.get("target_pose")
+        if not pose:
+            return None
+        return EmbodimentCommand(
+            robot_id=args.get("robot_id", ctx.robot_id),
+            command_type="cartesian",
+            values=list(pose),
+        )
+
     async def _simulate(self, args: dict[str, Any], ctx: ToolContext) -> CompletionVerdict:
         target = args.get("target_pose", [0.0] * 6)
         return CompletionVerdict(
@@ -440,6 +475,16 @@ class MoveToPoseTool(_RobotSdkVerbTool):
         },
     )
 
+    def to_safety_command(self, args: dict[str, Any], ctx: ToolContext) -> EmbodimentCommand | None:
+        pose = args.get("target_pose")
+        if not pose:
+            return None
+        return EmbodimentCommand(
+            robot_id=args.get("robot_id", ctx.robot_id),
+            command_type="cartesian",
+            values=list(pose),
+        )
+
     async def _simulate(self, args: dict[str, Any], ctx: ToolContext) -> CompletionVerdict:
         target = args.get("target_pose", [0.0] * 6)
         return CompletionVerdict(
@@ -502,6 +547,79 @@ class HomeTool(_RobotSdkVerbTool):
 
 
 # ---------------------------------------------------------------------------
+# 5. locomote_to -------------------------------------------------------------
+# ---------------------------------------------------------------------------
+
+
+class LocomoteToTool(_RobotSdkVerbTool):
+    """Drive the robot base to a goal pose with on-robot obstacle avoidance.
+
+    The on-robot agent_server owns local planning, obstacle avoidance, and the
+    SLAM/odometry feedback loop. The harness supplies a goal pose and awaits a
+    single CompletionVerdict; it does not stream velocity commands.
+    """
+
+    name = ROBOT_SDK_LOCOMOTE_TO
+    schema = ToolSchema(
+        name=ROBOT_SDK_LOCOMOTE_TO,
+        description=(
+            "Drive the robot base to a goal pose. The on-robot agent_server runs "
+            "local planning and obstacle avoidance; the harness supplies the goal "
+            "and awaits a CompletionVerdict."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "robot_id": {"type": "string"},
+                "target_pose": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "minItems": 2,
+                    "maxItems": 3,
+                    "description": "[x, y] or [x, y, yaw] goal in the map frame (meters, radians).",
+                },
+                "constraints": _CONSTRAINTS_SCHEMA,
+            },
+            "required": ["robot_id", "target_pose"],
+        },
+        output_schema={
+            "type": "object",
+            "properties": {
+                **COMPLETION_VERDICT_SCHEMA["properties"],
+                "final_pose": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "description": "Reached base pose in the map frame.",
+                },
+            },
+            "required": COMPLETION_VERDICT_SCHEMA["required"],
+        },
+    )
+
+    def to_safety_command(self, args: dict[str, Any], ctx: ToolContext) -> EmbodimentCommand | None:
+        goal = args.get("target_pose")
+        if not goal:
+            return None
+        return EmbodimentCommand(
+            robot_id=args.get("robot_id", ctx.robot_id),
+            command_type="locomotion",
+            values=list(goal),
+        )
+
+    async def _simulate(self, args: dict[str, Any], ctx: ToolContext) -> CompletionVerdict:
+        goal = args.get("target_pose", [0.0, 0.0])
+        return CompletionVerdict(
+            outcome="success",
+            evidence=f"locomote_to reached goal={goal}",
+            duration_s=4.0,
+            robot_state_snapshot={
+                "robot_id": args.get("robot_id", ctx.robot_id),
+                "base_pose": goal,
+            },
+        )
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
@@ -517,6 +635,7 @@ def build_robot_sdk_verb_tools() -> list[_RobotSdkVerbTool]:
         ReactiveGraspTool(),
         VisualServoToTool(),
         MoveToPoseTool(),
+        LocomoteToTool(),
         HomeTool(),
     ]
 
@@ -524,6 +643,7 @@ def build_robot_sdk_verb_tools() -> list[_RobotSdkVerbTool]:
 __all__ = [
     "COMPLETION_VERDICT_SCHEMA",
     "ROBOT_SDK_HOME",
+    "ROBOT_SDK_LOCOMOTE_TO",
     "ROBOT_SDK_MOVE_TO_POSE",
     "ROBOT_SDK_REACTIVE_GRASP",
     "ROBOT_SDK_VISUAL_SERVO_TO",
@@ -531,6 +651,7 @@ __all__ = [
     "CompletionOutcome",
     "CompletionVerdict",
     "HomeTool",
+    "LocomoteToTool",
     "MoveToPoseTool",
     "ReactiveGraspTool",
     "VisualServoToTool",
