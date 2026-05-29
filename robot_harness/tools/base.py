@@ -96,6 +96,20 @@ class Tool(Protocol):
       call to the high-level command the envelope validates (pose reachability,
       workspace bounds). Returning None means the call carries no
       harness-checkable target and the on-robot reflex is authoritative.
+
+    Visibility (orthogonal to ``hardware_bound``):
+    - ``brain_visible = True`` (default) — the tool appears in the spec list the
+      Brain plans over (:meth:`ToolRegistry.export_for_brain`).
+    - ``brain_visible = False`` — the tool stays *registered and invocable* (so a
+      skill can call it via ``get()``, and ``tool list`` still shows it for
+      debugging) but is hidden from the Brain's planning vocabulary. Use this for
+      verb-internal sub-capabilities (grasp-pose estimation, single-step VLA
+      inference) and low-level override dispatch, so the Brain is not tempted to
+      hand-assemble a control pipeline at the slow planning layer.
+
+    ``hardware_bound`` answers "must this pass SafetyEnvelope?"; ``brain_visible``
+    answers "should the Brain see this when planning?" — they cross-cut, so never
+    derive one from the other.
     """
 
     @property
@@ -196,8 +210,14 @@ class ToolRegistry:
         return [t.schema for t in tools]
 
     def export_for_brain(self, profile: BrainProfile) -> list[BrainToolSpec]:
-        """Export tool specs in the format expected by the Brain backend."""
-        schemas = self.list_schemas()
+        """Export tool specs in the format expected by the Brain backend.
+
+        Only tools with ``brain_visible`` (default True) are exported. A tool
+        marked ``brain_visible = False`` stays registered and invocable — skills
+        can still reach it via :meth:`get` — but is hidden from the Brain's
+        planning vocabulary. See :class:`Tool` for when to hide a tool.
+        """
+        schemas = [t.schema for t in self._tools.values() if getattr(t, "brain_visible", True)]
         if profile.name in ("openai", "litellm"):
             return [s.to_openai_function() for s in schemas]
         if profile.name == "mcp":

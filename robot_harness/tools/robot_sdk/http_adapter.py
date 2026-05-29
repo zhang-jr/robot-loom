@@ -38,6 +38,10 @@ class RobotSdkTool:
 
     name = "robot_sdk.execute_action"
     backend: ToolBackend = "native"
+    # Low-level override dispatch: hidden from the Brain's planning vocabulary so
+    # it does not hand-assemble open-loop control. Reactive verbs are the default
+    # act surface; this stays invocable for skills / explicit override paths.
+    brain_visible = False
     schema = ToolSchema(
         name="robot_sdk.execute_action",
         description=(
