@@ -1,12 +1,22 @@
-"""SpatialHubMemory — mock adapter for an external SpatialMemory-like server.
+"""SpatialHubMemory — in-process memory backend.
 
-Currently an in-process facade backed by InMemory* implementations.
-TODO: issue HTTP requests to a self-hosted SpatialMemory server.
+A facade over four dict-backed sub-memories that satisfies the Memory Protocol.
+Lives in the harness process: not shared across robots, not durable across
+restarts. For fleet-wide, durable memory use RemoteSpatialMemory.
 """
 
 from __future__ import annotations
 
-from robot_harness.memory.base import MemoryEntry, MemoryHit, MemoryId, MemoryQuery
+from robot_harness.memory.base import (
+    EpisodicMemory,
+    MemoryEntry,
+    MemoryHit,
+    MemoryId,
+    MemoryQuery,
+    ObjectMemory,
+    PlaceMemory,
+    SemanticMemory,
+)
 from robot_harness.memory.episodic_memory import InMemoryEpisodicMemory
 from robot_harness.memory.object_memory import InMemoryObjectMemory
 from robot_harness.memory.place_memory import InMemoryPlaceMemory
@@ -20,10 +30,10 @@ class SpatialHubMemory:
     """
 
     def __init__(self) -> None:
-        self.object = InMemoryObjectMemory()
-        self.place = InMemoryPlaceMemory()
-        self.episodic = InMemoryEpisodicMemory()
-        self.semantic = InMemorySemanticMemory()
+        self.object: ObjectMemory = InMemoryObjectMemory()
+        self.place: PlaceMemory = InMemoryPlaceMemory()
+        self.episodic: EpisodicMemory = InMemoryEpisodicMemory()
+        self.semantic: SemanticMemory = InMemorySemanticMemory()
 
     async def write(self, entry: MemoryEntry) -> MemoryId:
         """Route a write to the appropriate sub-memory."""

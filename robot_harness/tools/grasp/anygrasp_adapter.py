@@ -18,6 +18,10 @@ class AnyGraspTool:
 
     name = "grasp.estimate_pose"
     backend: ToolBackend = "native"
+    # Verb-internal sub-capability: consumed inside an on-robot grasp verb, not a
+    # standalone Brain capability. Hidden from planning so the Brain does not
+    # stitch "detect -> estimate_pose -> dispatch" into a slow-layer pipeline.
+    brain_visible = False
     schema = ToolSchema(
         name="grasp.estimate_pose",
         description="Estimate a 6-DOF grasp pose for a detected object.",

@@ -54,6 +54,27 @@ class SafetyConfig(BaseModel):
     )
 
 
+class MemoryConfig(BaseModel):
+    """Memory backend selection.
+
+    ``backend`` chooses where observations / decisions / outcomes are stored:
+
+    - ``null``     — no-op store; nothing is persisted. Queries always return
+      empty. Safe default when no backend is wired.
+    - ``embedded`` — in-process dict-backed store. Lives in the harness process,
+      so it is not shared across robots and does not survive a restart.
+    - ``external`` — remote SpatialMemory-like server reached over HTTP. Shared
+      across robots and durable across restarts. Requires ``server_url``.
+
+    Only ``external`` can back a multi-robot fleet, because the embedded and null
+    stores cannot be shared between robots.
+    """
+
+    backend: Literal["null", "embedded", "external"] = "embedded"
+    server_url: str = ""
+    request_timeout_s: float = 10.0
+
+
 class ObservabilityConfig(BaseModel):
     trace_sink: Literal["stderr", "file"] = "stderr"
     trace_file: str = ""
@@ -64,6 +85,7 @@ class HarnessConfig(BaseModel):
     brain: BrainConfig = Field(default_factory=BrainConfig)
     tool: ToolConfig = Field(default_factory=ToolConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     fleet_size: int = 1
     robot_ids: list[str] = Field(default_factory=lambda: ["robot-0"])

@@ -19,6 +19,10 @@ class VlaServingTool:
 
     name = "vla.infer_action"
     backend: ToolBackend = "native"
+    # Single-step action inference: belongs inside an on-robot rollout verb, not
+    # the Brain's planning loop — repeatedly polling it would be a cross-network
+    # control loop. Hidden from planning; stays invocable for verbs / debugging.
+    brain_visible = False
     schema = ToolSchema(
         name="vla.infer_action",
         description=(
