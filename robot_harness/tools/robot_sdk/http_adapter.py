@@ -14,26 +14,31 @@ import time
 import uuid
 from typing import Any
 
-from robot_harness.embodiment.base import EmbodimentCommand
+from robot_harness.embodiment.base import EmbodimentAdapter, EmbodimentCommand
 from robot_harness.tools.base import ToolContext, ToolResult
 from robot_harness.tools.schema import ToolBackend, ToolSchema
 
 
 class RobotSdkTool:
-    """Mock per-robot action dispatch tool.
+    """Low-level per-robot action dispatch tool.
 
     Boundary (ADR-019):
       • This tool transports a HIGH-LEVEL command and returns a handle.
-      • The on-robot agent_server is responsible for trajectory planning, joint
-        servo, hand-eye calibration, IMU/force fusion, and e-stop reflex.
+      • The on-robot agent_server (or a sim agent_server) is responsible for
+        trajectory planning, joint servo, hand-eye calibration, IMU/force
+        fusion, and e-stop reflex.
       • The harness only awaits a completion event; it never observes per-tick
         state through this tool.
       • Visual servoing or "approach until X" loops must NOT be implemented by
         repeatedly invoking this tool — wrap them as a reactive verb on the
         agent_server instead (separate tool in this package).
 
-    Currently simulates command dispatch without contacting any hardware.
-    TODO: POST EmbodimentCommand to a per-robot HTTP/WebSocket agent_server.
+    Backend selection:
+      • Constructed with an ``adapters`` map (robot_id → EmbodimentAdapter) it
+        dispatches *for real* — to a real robot or a sim agent_server — then
+        samples ``get_state()`` so the loop sees the post-step state. This is
+        the path that actually advances a sim ``env.step()`` (ADR-021).
+      • Constructed without it, it returns a mock handle (offline / unit tests).
     """
 
     name = "robot_sdk.execute_action"
@@ -74,9 +79,21 @@ class RobotSdkTool:
                 "action_id": {"type": "string"},
                 "estimated_duration_s": {"type": "number"},
                 "robot_id": {"type": "string"},
+                "state": {
+                    "type": "object",
+                    "description": "Post-dispatch RobotState sample (live backend only).",
+                },
             },
         },
     )
+
+    def __init__(self, adapters: dict[str, EmbodimentAdapter] | None = None) -> None:
+        """Args:
+        adapters: robot_id → EmbodimentAdapter. When provided, ``invoke``
+            dispatches to the real/sim backend and samples state. When omitted,
+            ``invoke`` returns a mock handle (offline / tests).
+        """
+        self._adapters = adapters or {}
 
     @property
     def is_idempotent(self) -> bool:
@@ -103,16 +120,40 @@ class RobotSdkTool:
 
     async def invoke(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         t0 = time.monotonic()
-        action_id = str(uuid.uuid4())
+        robot_id = args.get("robot_id", ctx.robot_id)
+        adapter = self._adapters.get(robot_id)
+
+        if adapter is None:
+            # No live backend wired — mock dispatch (offline / unit tests).
+            latency = (time.monotonic() - t0) * 1000
+            return ToolResult(
+                tool_name=self.name,
+                trace_id=ctx.trace_id,
+                success=True,
+                output={
+                    "action_id": str(uuid.uuid4()),
+                    "estimated_duration_s": 1.5,
+                    "robot_id": robot_id,
+                },
+                latency_ms=latency,
+            )
+
+        # Live dispatch: send the high-level command, then sample the resulting
+        # state so the AgentLoop sees the post-step world (SafetyEnvelope has
+        # already run in AgentLoop before invoke — ADR-007).
+        cmd = self.to_safety_command(args, ctx)
+        handle = await adapter.dispatch(cmd)
+        state = await adapter.get_state()
         latency = (time.monotonic() - t0) * 1000
         return ToolResult(
             tool_name=self.name,
             trace_id=ctx.trace_id,
             success=True,
             output={
-                "action_id": action_id,
-                "estimated_duration_s": 1.5,
-                "robot_id": args.get("robot_id", ctx.robot_id),
+                "action_id": handle.action_id,
+                "estimated_duration_s": handle.estimated_duration_s,
+                "robot_id": robot_id,
+                "state": state.model_dump(),
             },
             latency_ms=latency,
         )

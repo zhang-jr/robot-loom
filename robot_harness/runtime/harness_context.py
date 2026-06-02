@@ -99,8 +99,15 @@ class HarnessContext:
         *,
         memory: Memory | None = None,
     ) -> HarnessContext:
-        """Convenience factory — wires up default implementations."""
+        """Convenience factory — wires up default implementations.
+
+        Populates ``embodiment_adapters`` from ``config`` (ADR-009 / ADR-021):
+        each robot's backend (mock / agent_server / sim) is constructed by the
+        embodiment factory, so a robot configured ``backend: sim`` gets a live
+        MuJoCo / Isaac adapter here without any business-code change.
+        """
         from robot_harness.config.loader import load_config
+        from robot_harness.embodiment.factory import build_catalog
         from robot_harness.tools.memory.backend import build_memory
 
         cfg = config or load_config()
@@ -108,10 +115,14 @@ class HarnessContext:
         skill_registry = SkillRegistry()
         safety_envelope = SafetyEnvelope(cfg.safety)
 
+        catalog = build_catalog(cfg)
+        adapters = {rid: catalog.get(rid) for rid in catalog.list_robot_ids()}
+
         return cls(
             config=cfg,
             tool_registry=tool_registry,
             skill_registry=skill_registry,
             safety_envelope=safety_envelope,
             memory=memory or build_memory(cfg.memory, fleet_size=cfg.fleet_size),
+            embodiment_adapters=adapters,
         )
