@@ -44,11 +44,33 @@ class VlaServingTool:
             "properties": {
                 "actions": {
                     "type": "array",
-                    "description": "List of predicted joint/EE actions",
-                    "items": {"type": "array", "items": {"type": "number"}},
+                    "description": (
+                        "List of predicted 7D actions: "
+                        "[dx, dy, dz, drx, dry, drz, gripper]"
+                    ),
+                    "items": {
+                        "type": "array",
+                        "items": [
+                            {"type": "number"},
+                            {"type": "number"},
+                            {"type": "number"},
+                            {"type": "number"},
+                            {"type": "number"},
+                            {"type": "number"},
+                            {
+                                "type": "number",
+                                "enum": [0, 1],
+                                "description": "Gripper command: 0 opens, 1 closes.",
+                            },
+                        ],
+                        "additionalItems": False,
+                        "minItems": 7,
+                        "maxItems": 7,
+                    },
                 },
                 "model_id": {"type": "string"},
             },
+            "required": ["actions", "model_id"],
         },
     )
 
@@ -63,8 +85,8 @@ class VlaServingTool:
     async def invoke(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         t0 = time.monotonic()
         n = int(args.get("num_actions", 1))
-        # Synthetic: small cartesian delta actions
-        actions = [[0.01, 0.0, -0.005, 0.0, 0.0, 0.0]] * n
+        # Synthetic: small cartesian delta actions with an open gripper.
+        actions = [[0.01, 0.0, -0.005, 0.0, 0.0, 0.0, 0.0]] * n
         latency = (time.monotonic() - t0) * 1000
         return ToolResult(
             tool_name=self.name,
