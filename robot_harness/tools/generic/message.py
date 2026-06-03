@@ -1,7 +1,6 @@
 """SendMessageTool — generic log/notification tool (NativeTool).
 
 Currently writes to the structured tracer.
-TODO: route to configured channels (Telegram / Feishu / Discord).
 """
 
 from __future__ import annotations
@@ -14,6 +13,10 @@ from robot_harness.tools.base import ToolContext, ToolResult
 from robot_harness.tools.schema import ToolBackend, ToolSchema
 
 
+# TODO (ADR-023): deliver via the Channel layer (inject a ChannelManager.send
+# sink) instead of only tracing. Stays channel-agnostic — target defaults to the
+# originating session's (channel, user_id). This is the fire-and-forget "report"
+# half of Talk; the round-trip "ask_user" half goes through BrainDecision.ask_user.
 class SendMessageTool:
     """Send a notification message to the operator channel."""
 

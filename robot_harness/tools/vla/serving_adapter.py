@@ -13,10 +13,11 @@ class VlaServingTool:
     """Mock VLA (Vision-Language-Action) inference tool.
 
     Currently returns a synthetic joint-space action without contacting any server.
-    TODO: POST observation + instruction to an external VLA serving runtime
-    (e.g. OpenVLA, RoboFlamingo, π0) over HTTP/WebSocket.
     """
 
+    # TODO (ADR-022): the VLA serving client belongs inside an on-robot rollout
+    # verb (single-step inference must not become a cross-network control loop).
+    # This adapter stays only as a debug/override path (brain_visible=False).
     name = "vla.infer_action"
     backend: ToolBackend = "native"
     # Single-step action inference: belongs inside an on-robot rollout verb, not

@@ -13,9 +13,9 @@ class VlacCriticTool:
     """Mock VLAC-style progress critic tool.
 
     Currently always returns "progress" with synthetic confidence.
-    TODO: POST current + reference frames to an external critic server.
     """
 
+    # TODO (ADR-001): POST current + reference frames to an external critic server.
     name = "critic.judge_progress"
     backend: ToolBackend = "native"
     schema = ToolSchema(
