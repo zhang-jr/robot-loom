@@ -141,10 +141,27 @@ def _check_camera_data(raw: dict[str, object]) -> tuple[bool, str]:
         return False, f"schema: {exc.errors()[:1]}"
     if not data.rendered:
         return True, "descriptor (not rendered)"
+
+    # RGB
     image = base64.b64decode(data.image_b64)
     if data.encoding == "rgb_raw":
         expected = data.width * data.height * data.channels
-        return len(image) == expected, f"rgb_raw {len(image)} vs {expected}"
-    if data.encoding == "png":
-        return image[:8] == _PNG_MAGIC, "png header"
-    return False, f"rendered but encoding={data.encoding}"
+        if len(image) != expected:
+            return False, f"rgb_raw {len(image)} vs {expected}"
+    elif data.encoding == "png":
+        if image[:8] != _PNG_MAGIC:
+            return False, "bad png header"
+    else:
+        return False, f"rendered but encoding={data.encoding}"
+
+    # Depth (optional) — float32 little-endian, width*height values.
+    if data.depth_encoding == "float32":
+        depth = base64.b64decode(data.depth_b64)
+        expected_d = data.width * data.height * 4
+        if len(depth) != expected_d:
+            return False, f"depth {len(depth)} vs {expected_d}"
+        if data.intrinsics is None or data.intrinsics.fx <= 0:
+            return False, "depth present but intrinsics missing/invalid"
+        return True, "rgb+depth"
+
+    return True, "rgb"

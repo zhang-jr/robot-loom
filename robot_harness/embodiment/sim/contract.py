@@ -40,7 +40,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from robot_harness.embodiment.base import (
     DispatchHandle,
@@ -57,16 +57,47 @@ SafetyCheckRequest = EmbodimentCommand
 SafetyCheckResponse = SafetyVerdict
 
 CameraEncoding = Literal["png", "rgb_raw", "none"]
+DepthEncoding = Literal["float32", "none"]
+
+
+class CameraIntrinsics(BaseModel):
+    """Pinhole intrinsics (pixels). Needed to back-project depth to a point cloud."""
+
+    fx: float
+    fy: float
+    cx: float
+    cy: float
+
+
+class CameraPose(BaseModel):
+    """World pose of the camera (``world <- camera``).
+
+    MuJoCo / OpenGL camera convention: the camera looks down its local ``-z``,
+    with ``+x`` right and ``+y`` up. ``rotation`` is the row-major 3x3 of the
+    camera frame expressed in world. Consumers use this to lift a camera-frame
+    point cloud into the world frame (T_wc) for world-frame grasp targets.
+    """
+
+    position: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])
+    rotation: list[float] = Field(default_factory=list)  # 9 floats, row-major
 
 
 class CameraFrameData(BaseModel):
     """Typed shape of ``Frame.data`` for a sim camera frame.
 
-    When ``rendered`` is True the image fields are present and consistent: a
+    When ``rendered`` is True the RGB fields are present and consistent: a
     decoded ``rgb_raw`` payload has length ``width * height * channels``; a
     ``png`` payload starts with the PNG magic bytes. When False the frame is a
     descriptor (kinematic fallback or no GL backend) and ``render_error`` may
     explain why.
+
+    Optional RGB-D fields (present when the sim renders depth):
+      - ``depth_b64`` / ``depth_encoding`` — depth map. ``float32`` is a raw
+        little-endian float32 array, row-major, ``width * height`` values, in
+        METERS. No-hit pixels carry the far-clip distance; consumers filter
+        them (e.g. drop depth beyond the workspace).
+      - ``intrinsics`` — pinhole fx/fy/cx/cy for back-projection.
+      - ``camera_pose`` — world<-camera transform for world-frame targets.
     """
 
     rendered: bool = False
@@ -77,6 +108,11 @@ class CameraFrameData(BaseModel):
     height: int = 0
     channels: int = 3
     render_error: str = ""
+    # RGB-D extensions (optional)
+    depth_b64: str = ""
+    depth_encoding: DepthEncoding = "none"
+    intrinsics: CameraIntrinsics | None = None
+    camera_pose: CameraPose | None = None
 
 
 class CameraFrameResponse(BaseModel):
