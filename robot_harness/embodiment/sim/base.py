@@ -105,6 +105,15 @@ class SimEmbodimentAdapter:
         raw = await self._client.get_sim_time()
         return float(raw.get("sim_time", 0.0))
 
+    async def call_verb(self, verb: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Invoke an on-robot mid-loop verb on the sim agent_server (ADR-019).
+
+        Returns the raw CompletionVerdict-shaped dict; the robot_sdk verb tool
+        validates it. This is how a sim runs ``move_to_pose`` / reactive verbs
+        internally while the harness only sees the completion event.
+        """
+        return await self._client.call_verb(verb, payload)
+
     async def aclose(self) -> None:
         await self._client.aclose()
 

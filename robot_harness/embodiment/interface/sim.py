@@ -124,3 +124,11 @@ class SimAgentServerClient:
 
     async def get_sim_time(self) -> dict[str, Any]:
         return await self._get("/sim_time")
+
+    async def call_verb(self, verb: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Invoke an on-robot mid-loop verb (ADR-019). POST /verb/{verb}.
+
+        The sim runs the verb's perception-action loop internally and returns a
+        CompletionVerdict-shaped dict.
+        """
+        return await self._post(f"/verb/{verb}", payload)
