@@ -110,6 +110,12 @@ class EmbodimentBackendConfig(BaseModel):
     robot_type: Literal["arm", "humanoid", "quadruped", "mobile"] = "arm"
     dof: int = 6
     server_url: str = ""
+    # Cameras this robot has, by name (e.g. ["wrist", "overhead"]). Empty means
+    # the robot has no camera — the harness then does NOT expose a frame-capture
+    # tool for it, and the Brain perceives its state through proprioception
+    # (get_state), completion events, and (fleet-shared) memory instead. Robots
+    # are heterogeneous: a camera is a per-robot capability, never assumed.
+    cameras: list[str] = Field(default_factory=list)
     # sim-only fields (ignored unless backend == "sim")
     sim_engine: Literal["mujoco", "isaac"] = "mujoco"
     scene: str = ""
