@@ -1,7 +1,6 @@
 """MCPServer — exposes the harness itself as an MCP server (reverse direction).
 
-Currently an interface stub. TODO: implement the full MCP server protocol so
-external agents can call harness tools via MCP (ADR-002).
+Currently an interface stub.
 """
 
 from __future__ import annotations
@@ -11,6 +10,8 @@ from typing import Any
 from robot_harness.tools.base import ToolRegistry
 
 
+# TODO (ADR-002): implement the full MCP server protocol so external agents can
+# call harness tools via MCP.
 class HarnessMCPServer:
     """Wraps the harness ToolRegistry as an MCP server.
 

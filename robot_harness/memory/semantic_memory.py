@@ -12,9 +12,10 @@ class InMemorySemanticMemory:
     """Dict-backed in-process semantic memory stub.
 
     Uses simple substring matching as a stand-in for embedding search.
-    TODO: replace with a Qdrant/Milvus/FAISS-backed adapter when a real
-    semantic memory service is available.
     """
+
+    # TODO (ADR-020): replace with a Qdrant/Milvus/FAISS-backed adapter when a
+    # real semantic memory service is available.
 
     def __init__(self) -> None:
         self._store: dict[str, dict[str, Any]] = {}

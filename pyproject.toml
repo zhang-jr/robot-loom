@@ -33,6 +33,20 @@ dev = [
     "mypy>=1.10.0",
     "pre-commit>=3.7.0",
 ]
+# Deps to RUN the bundled reference sim server
+# (examples/sim_servers/mujoco_agent_server.py), NOT for the harness to use a
+# sim. The harness↔sim boundary is pure HTTP (ADR-001 / ADR-021), so the harness
+# itself needs only httpx (a core dep) to drive a sim — exactly as for real
+# hardware. A real robot's heavy deps (ROS 2, vendor SDK, drivers) likewise live
+# in its per-robot agent_server, not here; there is therefore no [hardware]
+# extra. If a native ROS 2 / DDS adapter ever lands in embodiment/interface/, it
+# gets its own [ros2] extra at that point (ADR-016).
+sim-ref = [
+    "mujoco>=3.0.0",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.29.0",
+    "pillow>=10.0.0",
+]
 
 [project.scripts]
 robot-loom = "robot_harness.cli:main"

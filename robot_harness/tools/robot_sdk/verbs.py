@@ -22,9 +22,13 @@ The harness side stays thin: build a verb tool, register it with the
 the same :data:`COMPLETION_VERDICT_SCHEMA` output shape so downstream
 ReplanPolicy can treat them uniformly.
 
-Status: currently mock implementations. The HTTP/WS dispatch to a real
-per-robot agent_server is wired in :class:`_RobotSdkVerbTool._dispatch` (today
-a stub) and will be filled in once the on-robot recipe lands.
+Status: when constructed with an ``adapters`` map whose adapter implements
+:class:`SupportsVerbs` (e.g. a sim agent_server), :meth:`_RobotSdkVerbTool._dispatch`
+POSTs the verb to the agent_server's ``/verb/{name}`` endpoint and the on-robot
+mid-loop runs there. Without a verb-capable adapter the tool returns a simulated
+verdict (harness end-to-end tests). The reference sim implements ``move_to_pose``;
+other verbs return a "not implemented" verdict against it until their on-robot
+recipe lands.
 
 Compare and contrast (do not confuse):
     * :class:`robot_harness.tools.robot_sdk.RobotSdkTool` (``execute_action``)
@@ -38,14 +42,26 @@ Compare and contrast (do not confuse):
 from __future__ import annotations
 
 import time
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, Protocol, runtime_checkable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from robot_harness.embodiment.base import EmbodimentCommand
 from robot_harness.errors import ToolCancelledError
 from robot_harness.tools.base import ToolContext, ToolResult
 from robot_harness.tools.schema import ToolBackend, ToolSchema
+
+
+@runtime_checkable
+class SupportsVerbs(Protocol):
+    """An agent_server adapter that can run on-robot verbs (ADR-019).
+
+    A sim agent_server (``SimEmbodimentAdapter``) implements this; a mock robot
+    adapter does not, so verb tools fall back to their simulated verdict.
+    """
+
+    async def call_verb(self, verb: str, payload: dict[str, Any]) -> dict[str, Any]: ...
+
 
 # ---------------------------------------------------------------------------
 # Tool name constants — import these instead of inlining literals
@@ -84,7 +100,13 @@ class CompletionVerdict(BaseModel):
           on task-level progress ("did the task actually advance?").
 
     ``ReplanPolicy`` consumes both and applies the joint-decision rule.
+
+    ``extra="allow"`` so an agent_server may return verb-specific fields
+    (``grasped_object_id``, ``final_grasp_pose``, ``residual_error_m``, …) on top
+    of the shared core; they flow through to the tool output unchanged.
     """
+
+    model_config = ConfigDict(extra="allow")
 
     outcome: CompletionOutcome
     evidence: str = ""
@@ -203,6 +225,15 @@ class _RobotSdkVerbTool:
     # produces two attempted grasps.  Subclasses (e.g. HomeTool) may override.
     _idempotent: ClassVar[bool] = False
 
+    def __init__(self, adapters: dict[str, Any] | None = None) -> None:
+        """Args:
+        adapters: robot_id → EmbodimentAdapter. When the resolved adapter
+            supports verbs (``SupportsVerbs``, e.g. a sim agent_server), the
+            verb is POSTed to its ``/verb/{name}`` endpoint and the on-robot
+            mid-loop runs there. Otherwise the tool returns a simulated verdict.
+        """
+        self._adapters = adapters or {}
+
     @property
     def is_idempotent(self) -> bool:
         return self._idempotent
@@ -253,7 +284,16 @@ class _RobotSdkVerbTool:
     # ----- override hooks ---------------------------------------------------
 
     async def _dispatch(self, args: dict[str, Any], ctx: ToolContext) -> CompletionVerdict:
-        """Mock dispatch. Replace with real HTTP/WS call in a later phase."""
+        """Dispatch to the agent_server's verb endpoint, or simulate if unwired.
+
+        The verb name is the tool name without the ``robot_sdk.`` prefix.
+        """
+        robot_id = args.get("robot_id", ctx.robot_id)
+        adapter = self._adapters.get(robot_id)
+        if isinstance(adapter, SupportsVerbs):
+            verb = self.name.split(".", 1)[1]
+            resp = await adapter.call_verb(verb, args)
+            return CompletionVerdict.model_validate(resp)
         return await self._simulate(args, ctx)
 
     async def _simulate(self, args: dict[str, Any], ctx: ToolContext) -> CompletionVerdict:
@@ -624,19 +664,21 @@ class LocomoteToTool(_RobotSdkVerbTool):
 # ---------------------------------------------------------------------------
 
 
-def build_robot_sdk_verb_tools() -> list[_RobotSdkVerbTool]:
+def build_robot_sdk_verb_tools(
+    adapters: dict[str, Any] | None = None,
+) -> list[_RobotSdkVerbTool]:
     """Build the minimal-subset on-robot verb tools.
 
-    Today: mock implementations suitable for harness end-to-end tests.
-    Later this will accept a ``server_url`` argument and wire each verb to its
-    HTTP/WS endpoint on the per-robot agent_server.
+    Pass ``adapters`` (robot_id → EmbodimentAdapter) to dispatch verbs to a live
+    agent_server (e.g. a sim's ``/verb/{name}``) when the adapter supports verbs;
+    omit it for simulated verdicts (harness end-to-end tests).
     """
     return [
-        ReactiveGraspTool(),
-        VisualServoToTool(),
-        MoveToPoseTool(),
-        LocomoteToTool(),
-        HomeTool(),
+        ReactiveGraspTool(adapters),
+        VisualServoToTool(adapters),
+        MoveToPoseTool(adapters),
+        LocomoteToTool(adapters),
+        HomeTool(adapters),
     ]
 
 

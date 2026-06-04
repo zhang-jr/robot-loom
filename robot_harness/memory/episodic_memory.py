@@ -12,8 +12,9 @@ class InMemoryEpisodicMemory:
     """List-backed in-process episodic memory stub.
 
     Episodic memory is append-only — no upsert, each episode is a new entry.
-    TODO: replace with an adapter to an external memory server.
     """
+
+    # TODO (ADR-020): replace with an adapter to an external memory server.
 
     def __init__(self) -> None:
         self._log: list[dict[str, Any]] = []

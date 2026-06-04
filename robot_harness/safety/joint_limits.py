@@ -1,12 +1,13 @@
 """Joint limit checker extracted from SafetyEnvelope.
 
 Currently a basic ±limit check per joint.
-TODO: add per-robot URDF-based limits.
 """
 
 from __future__ import annotations
 
 from robot_harness.embodiment.base import EmbodimentCommand
+
+# TODO (ADR-007): add per-robot URDF-based limits.
 
 
 def check_joint_limits(

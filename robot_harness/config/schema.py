@@ -81,6 +81,47 @@ class ObservabilityConfig(BaseModel):
     otel_endpoint: str = ""
 
 
+class EmbodimentBackendConfig(BaseModel):
+    """Per-robot embodiment backend selection.
+
+    The embodiment backend is what sits behind ``EmbodimentAdapter`` — it is
+    embodiment-agnostic to the harness business layer (ADR-009): switching a
+    robot between real hardware and a simulator only changes this config, never
+    Brain / Skill / Critic code.
+
+    ``backend`` chooses where ``dispatch`` / ``get_state`` / ``get_camera_frame``
+    are served from:
+
+    - ``mock``         — in-process stub adapter; no network, returns canned
+      state. Default for dev / CI when nothing is wired.
+    - ``agent_server`` — real per-robot HTTP/WS agent_server on the robot
+      (ADR-016). Requires ``server_url``.
+    - ``sim``          — a simulator agent_server (MuJoCo / Isaac Lab). The sim
+      *runtime* runs as an external process exposing the same agent_server
+      contract plus sim lifecycle endpoints; the harness only holds the client
+      adapter (ADR-001 / ADR-019 / ADR-021). ``sim_engine`` picks the adapter
+      and the default port.
+
+    A simulator is never a tool — it plays the role of "per-robot agent_server +
+    hardware" and is reached through the embodiment layer, not the ToolRegistry.
+    """
+
+    backend: Literal["mock", "agent_server", "sim"] = "mock"
+    robot_type: Literal["arm", "humanoid", "quadruped", "mobile"] = "arm"
+    dof: int = 6
+    server_url: str = ""
+    # Cameras this robot has, by name (e.g. ["wrist", "overhead"]). Empty means
+    # the robot has no camera — the harness then does NOT expose a frame-capture
+    # tool for it, and the Brain perceives its state through proprioception
+    # (get_state), completion events, and (fleet-shared) memory instead. Robots
+    # are heterogeneous: a camera is a per-robot capability, never assumed.
+    cameras: list[str] = Field(default_factory=list)
+    # sim-only fields (ignored unless backend == "sim")
+    sim_engine: Literal["mujoco", "isaac"] = "mujoco"
+    scene: str = ""
+    request_timeout_s: float = 5.0
+
+
 class HarnessConfig(BaseModel):
     brain: BrainConfig = Field(default_factory=BrainConfig)
     tool: ToolConfig = Field(default_factory=ToolConfig)
@@ -89,3 +130,6 @@ class HarnessConfig(BaseModel):
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     fleet_size: int = 1
     robot_ids: list[str] = Field(default_factory=lambda: ["robot-0"])
+    # Per-robot embodiment backend, keyed by robot_id. Robots absent from this
+    # map fall back to a mock backend (the fleet_size=1 dev default, ADR-008).
+    embodiments: dict[str, EmbodimentBackendConfig] = Field(default_factory=dict)

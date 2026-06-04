@@ -84,3 +84,30 @@ observability:
 fleet_size: 1
 robot_ids:
   - robot-0
+
+# ---------------------------------------------------------------------------
+# Embodiment backends (ADR-009 / ADR-021), keyed by robot_id.
+#
+# A simulator is an embodiment backend, NOT a tool: it plays the role of
+# "per-robot agent_server + hardware". Switching a robot between real hardware
+# and a MuJoCo / Isaac Lab sim is a config change only — Brain / Skill / Critic
+# code never changes. Robots omitted here fall back to an in-process mock.
+#
+#   backend:      mock | agent_server | sim
+#     mock         — in-process stub; no network. Dev / CI default.
+#     agent_server — real per-robot HTTP/WS agent_server (needs server_url).
+#     sim          — external MuJoCo / Isaac Lab agent_server (sim runtime runs
+#                    out-of-process; harness holds only the client). The sim
+#                    runtime lives in a sibling repo, not in this one.
+#   sim_engine:   mujoco | isaac   (only used when backend: sim)
+#   server_url:   defaults to localhost:8810 (mujoco) / :8811 (isaac) if empty
+#
+# A runnable reference MuJoCo server: examples/sim_servers/mujoco_agent_server.py
+# ---------------------------------------------------------------------------
+embodiments: {}
+  # robot-0:
+  #   backend: sim
+  #   sim_engine: mujoco
+  #   robot_type: arm
+  #   dof: 6
+  #   server_url: http://localhost:8810

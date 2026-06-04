@@ -15,7 +15,7 @@ URL scheme conventions:
 
 Per-call sessions keep the implementation simple and stateless.  Production
 deployments that need lower latency should wrap a long-lived ``MCPClientSession``
-externally (TODO: connection pool).
+externally.
 """
 
 from __future__ import annotations
@@ -184,7 +184,7 @@ class MCPTool:
 
     A fresh :class:`MCPClientSession` is opened per ``invoke`` call.  This keeps
     the implementation stateless and easy to reason about; long-running
-    deployments should layer a connection pool on top (TODO: connection pool).
+    deployments should layer a connection pool on top.
 
     Args:
         tool_name: Tool identifier as published by the MCP server (must match).
@@ -195,6 +195,8 @@ class MCPTool:
         is_idempotent: Whether repeated calls with the same args are safe.
     """
 
+    # TODO (ADR-002): reuse a long-lived MCPClientSession / connection pool in
+    # production instead of opening one per invoke.
     def __init__(
         self,
         tool_name: str,

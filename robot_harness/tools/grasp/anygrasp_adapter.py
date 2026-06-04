@@ -13,9 +13,11 @@ class AnyGraspTool:
     """Mock grasp pose estimation tool.
 
     Currently returns a synthetic 6-DOF grasp pose without contacting any server.
-    TODO: POST to an external AnyGrasp / GraspAnything server.
     """
 
+    # TODO (ADR-022): the AnyGrasp / GraspAnything client belongs inside the
+    # on-robot reactive_grasp verb, not the harness. This adapter stays only as a
+    # debug/override path (brain_visible=False) or a sim stand-in.
     name = "grasp.estimate_pose"
     backend: ToolBackend = "native"
     # Verb-internal sub-capability: consumed inside an on-robot grasp verb, not a

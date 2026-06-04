@@ -1,8 +1,6 @@
 """Generic6DofArm — mock EmbodimentAdapter for a 6/7-DOF robot arm.
 
 Currently an in-process stub that satisfies the EmbodimentAdapter Protocol.
-TODO: delegate to HttpAgentServerClient once a real per-robot agent_server is
-running.
 """
 
 from __future__ import annotations
@@ -20,6 +18,8 @@ from robot_harness.embodiment.base import (
 from robot_harness.embodiment.interface.http import HttpAgentServerClient
 
 
+# TODO (ADR-016): delegate to HttpAgentServerClient once a real per-robot
+# agent_server is running.
 class Generic6DofArm:
     """Mock EmbodimentAdapter for a 6/7-DOF robot arm.
 
