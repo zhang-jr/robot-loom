@@ -159,6 +159,7 @@ class AgentLoop:
             if decision.decision_type == "tool_call":
                 turn_results = await self._execute_tool_calls(decision.tool_calls, task, trace_id)
                 all_tool_results.extend(turn_results)
+                await self._write_observations(task, turn, turn_results, trace_id)
 
                 any_error = any(not r.get("success") for r in turn_results)
                 if any_error:
@@ -254,6 +255,7 @@ class AgentLoop:
                                     new_decision.tool_calls, task, trace_id
                                 )
                                 all_tool_results.extend(turn_results)
+                                await self._write_observations(task, turn, turn_results, trace_id)
                                 history.turns.append(
                                     {
                                         "turn": f"{turn}.replan",
@@ -406,12 +408,80 @@ class AgentLoop:
                 error=str(exc),
             )
 
+    # Heavy blobs never enter memory — only structured facts the Brain can plan on.
+    _OBSERVATION_BLOB_KEYS = ("image_b64", "depth_b64")
+
+    async def _write_observations(
+        self, task: Task, turn: int, turn_results: list[dict[str, Any]], trace_id: str
+    ) -> None:
+        """Write each turn's structured observations back to memory (memory-first).
+
+        Closes the observation→Brain edge: next turn's :meth:`_query_memory`
+        surfaces these so the Brain knows what it already saw / did, instead of
+        re-observing forever. Detections go to object memory; state / frame /
+        verb results go to episodic. Image and depth blobs are stripped — only
+        structured facts are stored. Tagged with ``task.task_id`` so the embedded
+        backend's any-match tag filter keeps recall scoped to this task.
+        """
+        for r in turn_results:
+            if not r.get("success"):
+                continue
+            name = r.get("tool_name", "")
+            output = r.get("output") or {}
+            facts = {k: v for k, v in output.items() if k not in self._OBSERVATION_BLOB_KEYS}
+
+            if name == "perception.detect":
+                for obj in facts.get("objects", []):
+                    await self._safe_write(
+                        MemoryEntry(
+                            memory_type="object",
+                            robot_id=task.robot_id,
+                            content={"turn": turn, **obj},
+                            tags=["observation", task.task_id],
+                        ),
+                        trace_id,
+                    )
+            elif name in ("robot.capture_frame", "robot.get_state") or name.startswith(
+                "robot_sdk."
+            ):
+                await self._safe_write(
+                    MemoryEntry(
+                        memory_type="episodic",
+                        robot_id=task.robot_id,
+                        content={"turn": turn, "tool": name, "observation": facts},
+                        tags=["observation", task.task_id],
+                    ),
+                    trace_id,
+                )
+
+    async def _safe_write(self, entry: MemoryEntry, trace_id: str) -> None:
+        """Best-effort memory write; a memory outage must never block the loop."""
+        try:
+            await self._ctx.memory.write(entry)
+        except Exception as exc:  # noqa: BLE001
+            tracer.event(
+                "memory.write_failed",
+                trace_id=trace_id,
+                robot_id=entry.robot_id,
+                memory_type=entry.memory_type,
+                error=str(exc),
+            )
+
     async def _query_memory(self, task: Task) -> MemoryView:
         """Query all memory types for context relevant to the task (best-effort)."""
         view = MemoryView()
         try:
+            # This task's own observations, most-recent first. Scoped by task_id so
+            # the backend's any-match tag filter can't pull other tasks' entries or
+            # critic verdicts (tagged without task_id).
             episodic = await self._ctx.memory.query(
-                MemoryQuery(memory_type="episodic", robot_id=task.robot_id, text=task.description)
+                MemoryQuery(
+                    memory_type="episodic",
+                    robot_id=task.robot_id,
+                    text=task.description,
+                    tags=[task.task_id],
+                    top_k=10,
+                )
             )
             view.episodic_hits = [h.model_dump() for h in episodic]
         except Exception as exc:  # noqa: BLE001
@@ -419,6 +489,24 @@ class AgentLoop:
                 "memory.query_failed",
                 robot_id=task.robot_id,
                 memory_type="episodic",
+                error=str(exc),
+            )
+        try:
+            objects = await self._ctx.memory.query(
+                MemoryQuery(
+                    memory_type="object",
+                    robot_id=task.robot_id,
+                    text=task.description,
+                    tags=[task.task_id],
+                    top_k=10,
+                )
+            )
+            view.object_hits = [h.model_dump() for h in objects]
+        except Exception as exc:  # noqa: BLE001
+            tracer.event(
+                "memory.query_failed",
+                robot_id=task.robot_id,
+                memory_type="object",
                 error=str(exc),
             )
         try:

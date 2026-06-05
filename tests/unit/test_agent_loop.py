@@ -142,6 +142,88 @@ async def test_tool_call_then_plan() -> None:
     assert result.turns == 2
 
 
+class _CapturingBrain:
+    """Mock Brain that records the MemoryView it receives on each decide()."""
+
+    def __init__(self, decisions: list[BrainDecision]) -> None:
+        self._decisions = list(decisions)
+        self._i = 0
+        self.seen_views: list[MemoryView] = []
+
+    @property
+    def supports_streaming(self) -> bool:
+        return False
+
+    async def decide(self, task: Task, memory_view: MemoryView, tools: list[Any]) -> BrainDecision:
+        self.seen_views.append(memory_view)
+        d = (
+            self._decisions[self._i]
+            if self._i < len(self._decisions)
+            else BrainDecision(decision_type="plan", message="done")
+        )
+        self._i += 1
+        return d
+
+    async def replan(self, history: ExecutionHistory, critic_signal: CriticSignal) -> BrainDecision:
+        return BrainDecision(decision_type="give_up", message="n/a")
+
+
+class _DetectTool:
+    name = "perception.detect"
+    backend: ToolBackend = "native"
+    schema = ToolSchema(
+        name="perception.detect", description="detect", input_schema={"type": "object"}
+    )
+
+    @property
+    def is_idempotent(self) -> bool:
+        return True
+
+    @property
+    def is_cancellable(self) -> bool:
+        return False
+
+    async def invoke(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        return ToolResult(
+            tool_name=self.name,
+            trace_id=ctx.trace_id,
+            success=True,
+            output={"objects": [{"id": "cube", "label": "red cube", "confidence": 0.9}]},
+        )
+
+    async def cancel(self, ctx: ToolContext) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_observations_written_back_are_recalled_next_turn() -> None:
+    """The observation→Brain edge: what a turn observes, the next turn recalls.
+
+    Without this, the Brain re-observes forever (the close-loop spin). A
+    detection written to object memory after turn 1 must appear in the
+    MemoryView the Brain receives on turn 2.
+    """
+    from robot_harness.brain.base import ToolCallRequest
+    from robot_harness.tools.memory.spatial_hub_adapter import SpatialHubMemory
+
+    detect_call = BrainDecision(
+        decision_type="tool_call",
+        tool_calls=[ToolCallRequest(tool_name="perception.detect", args={})],
+    )
+    brain = _CapturingBrain([detect_call, BrainDecision(decision_type="plan", message="seen it")])
+    ctx = HarnessContext.build(memory=SpatialHubMemory())
+    ctx.tool_registry.register(_DetectTool())
+
+    result = await AgentLoop(brain, ctx, max_turns=5).run(_make_task())
+
+    assert result.outcome == "success"
+    # turn 1: nothing observed yet
+    assert brain.seen_views[0].object_hits == []
+    # turn 2: the cube detected on turn 1 is recalled
+    recalled = brain.seen_views[1].object_hits
+    assert any(h["content"].get("label") == "red cube" for h in recalled)
+
+
 @pytest.mark.asyncio
 async def test_max_turns_exceeded_returns_incomplete() -> None:
     """Exhausting the turn budget is an expected terminal outcome, not an error.
