@@ -8,7 +8,6 @@ from typing import Any
 import pytest
 
 from robot_harness.brain.base import BrainDecision, CriticSignal, ExecutionHistory, MemoryView, Task
-from robot_harness.errors import ReplanLoopExceededError
 from robot_harness.runtime.agent_loop import AgentLoop
 from robot_harness.runtime.harness_context import HarnessContext
 from robot_harness.tools.base import ToolContext, ToolResult
@@ -144,7 +143,14 @@ async def test_tool_call_then_plan() -> None:
 
 
 @pytest.mark.asyncio
-async def test_max_turns_exceeded_raises() -> None:
+async def test_max_turns_exceeded_returns_incomplete() -> None:
+    """Exhausting the turn budget is an expected terminal outcome, not an error.
+
+    An agent that keeps acting without converging must not crash the harness:
+    the loop returns an ``incomplete`` result (with the work so far) instead of
+    raising. ``ReplanLoopExceededError`` is reserved for real replan
+    non-convergence.
+    """
     from robot_harness.brain.base import ToolCallRequest
 
     # Brain keeps returning tool calls forever
@@ -159,8 +165,13 @@ async def test_max_turns_exceeded_raises() -> None:
     ctx.tool_registry.register(mock_tool)
 
     loop = AgentLoop(brain, ctx, max_turns=3)
-    with pytest.raises(ReplanLoopExceededError):
-        await loop.run(_make_task())
+    result = await loop.run(_make_task())
+
+    assert result.outcome == "incomplete"
+    assert result.turns == 3
+    # work-so-far is preserved (one tool call per turn), not discarded
+    assert len(result.tool_results) == 3
+    assert mock_tool.invoke_count == 3
 
 
 @pytest.mark.asyncio

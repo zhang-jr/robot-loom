@@ -48,7 +48,7 @@ class AgentResult(BaseModel):
 
     task_id: str
     robot_id: str
-    outcome: Literal["success", "failure", "give_up"]
+    outcome: Literal["success", "failure", "give_up", "incomplete"]
     message: str = ""
     turns: int = 0
     tool_results: list[dict[str, Any]] = Field(default_factory=list)
@@ -288,12 +288,30 @@ class AgentLoop:
                 await self._write_episode(task, result, trace_id)
                 return result
 
-        raise ReplanLoopExceededError(
-            f"Task '{task.task_id}' exceeded {self._max_turns} turns without completion",
-            max_iterations=self._max_turns,
+        # Turn budget exhausted without a terminal decision. This is an EXPECTED
+        # outcome — the agent kept acting/observing but never converged (a common
+        # "not smart" failure mode with many causes: weak prompt, noisy critic,
+        # insufficient observations, model limits). The harness is the safety net:
+        # record the episode and return like every other exit, instead of raising
+        # and crashing the caller. Distinct from the ReplanLoopExceededError above,
+        # which signals genuine replan non-convergence.
+        tracer.event(
+            "agent_loop.max_turns_exceeded",
             trace_id=trace_id,
             robot_id=task.robot_id,
+            turns=self._max_turns,
         )
+        result = AgentResult(
+            task_id=task.task_id,
+            robot_id=task.robot_id,
+            outcome="incomplete",
+            message=f"Exceeded {self._max_turns} turns without completion",
+            turns=self._max_turns,
+            tool_results=all_tool_results,
+            trace_id=trace_id,
+        )
+        await self._write_episode(task, result, trace_id)
+        return result
 
     # ------------------------------------------------------------------
     # Critic helpers
