@@ -12,17 +12,44 @@ Two read-only tools, both bridging to the robot's ``EmbodimentAdapter``:
 
 This fills the "live frame → Brain" gap: ``EmbodimentAdapter.get_camera_frame``
 is otherwise only reachable by the Critic, not by the Brain's tool vocabulary.
-The Brain captures a frame, then hands ``image_b64`` to an external perception
-tool. Cameras are a per-robot capability (ADR-008 / ADR-009) — never assumed.
+The Brain captures a frame, then hands the returned ``frame`` ref to an external
+perception tool; the harness resolves the ref to bytes out-of-band so the raw
+image never enters the LLM context or Memory. When no artifact store is wired the
+tool falls back to an inline ``image_b64``. Cameras are a per-robot capability
+(ADR-008 / ADR-009) — never assumed.
 """
 
 from __future__ import annotations
 
+import base64
 from typing import Any
 
 from robot_harness.embodiment.base import EmbodimentAdapter
+from robot_harness.tools.artifacts import ARTIFACT_REF_SCHEMA, ArtifactStore
 from robot_harness.tools.base import ToolContext, ToolResult
 from robot_harness.tools.schema import ToolBackend, ToolSchema
+
+# Large frame payloads are offloaded to the ArtifactStore under these output
+# keys → the small ref is published under the paired ref key instead. Keeps the
+# raw image/depth out of the LLM context and out of Memory.
+_OFFLOAD = (("image_b64", "frame", "image"), ("depth_b64", "depth", "depth"))
+
+
+async def _offload_blobs(output: dict[str, Any], store: ArtifactStore) -> dict[str, Any]:
+    """Move blob fields into *store*, replacing each with a small ArtifactRef.
+
+    Best-effort: a blob with no data is simply dropped. Subtype is taken from the
+    frame's own ``encoding`` / ``depth_encoding`` when present.
+    """
+    for blob_key, ref_key, kind in _OFFLOAD:
+        raw_b64 = output.pop(blob_key, "")
+        if not raw_b64:
+            continue
+        subtype = output.get("encoding" if kind == "image" else "depth_encoding") or kind
+        meta = {k: output[k] for k in ("camera", "width", "height", "channels") if k in output}
+        ref = await store.put(base64.b64decode(raw_b64), f"{kind}/{subtype}", meta=meta)
+        output[ref_key] = ref.model_dump()
+    return output
 
 
 def _no_adapter(tool: str, robot_id: str, ctx: ToolContext) -> ToolResult:
@@ -120,6 +147,10 @@ class CaptureFrameTool:
                 "camera": {"type": "string"},
                 "robot_id": {"type": "string"},
                 "format": {"type": "string"},
+                # With an artifact store wired, the image is offloaded and only
+                # this ref is returned; pass it as `frame` to a perception tool.
+                "frame": ARTIFACT_REF_SCHEMA,
+                # Inline fallback when no store is wired.
                 "image_b64": {"type": "string"},
             },
         },
@@ -164,16 +195,22 @@ class CaptureFrameTool:
         if adapter is None:
             return _no_adapter(self.name, robot_id, ctx)
         frame = await adapter.get_camera_frame(camera)
+        output: dict[str, Any] = {
+            "camera": frame.camera,
+            "robot_id": frame.robot_id,
+            "format": frame.format,
+            **frame.data,
+        }
+        # When a store is wired, hand large image/depth blobs to it and return
+        # only a small ref — the Brain plans over the ref, never the raw bytes.
+        # Without a store, fall back to the inline image (e.g. direct unit calls).
+        if ctx.artifact_store is not None:
+            output = await _offload_blobs(output, ctx.artifact_store)
         return ToolResult(
             tool_name=self.name,
             trace_id=ctx.trace_id,
             success=True,
-            output={
-                "camera": frame.camera,
-                "robot_id": frame.robot_id,
-                "format": frame.format,
-                **frame.data,
-            },
+            output=output,
         )
 
     async def cancel(self, ctx: ToolContext) -> None:

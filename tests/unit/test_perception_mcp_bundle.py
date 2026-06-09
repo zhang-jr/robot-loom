@@ -7,6 +7,7 @@ import pytest
 from robot_harness.errors import ToolBackendUnreachableError
 from robot_harness.tools.base import ToolContext, ToolRegistry
 from robot_harness.tools.mcp.client import MCPTool
+from robot_harness.tools.middleware.artifact_resolver import ArtifactResolverMiddleware
 from robot_harness.tools.perception.mcp_bundle import (
     PERCEPTION_DETECT_OBJECTS,
     PERCEPTION_ESTIMATE_DEPTH,
@@ -14,6 +15,7 @@ from robot_harness.tools.perception.mcp_bundle import (
     PERCEPTION_SEGMENT_PROMPTABLE,
     PERCEPTION_TOOL_NAMES,
     build_perception_tools,
+    register_perception_tools,
     verify_server_compatibility,
 )
 from tests._helpers.mcp import (
@@ -63,37 +65,57 @@ def test_factory_tools_register_into_registry() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_detect_objects_schema_requires_image_b64_and_prompts() -> None:
+def test_detect_objects_schema_accepts_image_or_frame() -> None:
     tools = {t.name: t for t in build_perception_tools("http://x")}
     schema = tools[PERCEPTION_DETECT_OBJECTS].schema.input_schema
+    # image is supplied either inline (image_b64) or as a frame ref; only prompts
+    # is structurally required (the image is the resolver's concern).
     assert "image_b64" in schema["properties"]
-    assert "prompts" in schema["properties"]
-    assert set(schema["required"]) == {"image_b64", "prompts"}
+    assert "frame" in schema["properties"]
+    assert set(schema["required"]) == {"prompts"}
 
 
-def test_estimate_depth_schema_requires_image_b64() -> None:
+def test_estimate_depth_schema_accepts_image_or_frame() -> None:
     tools = {t.name: t for t in build_perception_tools("http://x")}
     schema = tools[PERCEPTION_ESTIMATE_DEPTH].schema.input_schema
-    assert schema["required"] == ["image_b64"]
+    assert {"image_b64", "frame"} <= set(schema["properties"])
+    assert schema["required"] == []
     assert schema["properties"]["output"]["enum"] == ["relative", "metric_if_available"]
 
 
-def test_ground_phrase_schema_requires_image_and_phrase() -> None:
+def test_ground_phrase_schema_requires_phrase() -> None:
     tools = {t.name: t for t in build_perception_tools("http://x")}
     schema = tools[PERCEPTION_GROUND_PHRASE].schema.input_schema
-    assert set(schema["required"]) == {"image_b64", "phrase"}
+    assert {"image_b64", "frame"} <= set(schema["properties"])
+    assert set(schema["required"]) == {"phrase"}
 
 
-def test_segment_promptable_schema_requires_image_and_phrase() -> None:
+def test_segment_promptable_schema_requires_phrase() -> None:
     tools = {t.name: t for t in build_perception_tools("http://x")}
     schema = tools[PERCEPTION_SEGMENT_PROMPTABLE].schema.input_schema
-    assert set(schema["required"]) == {"image_b64", "phrase"}
+    assert {"image_b64", "frame"} <= set(schema["properties"])
+    assert set(schema["required"]) == {"phrase"}
 
 
 def test_output_schemas_present() -> None:
     """Every perception tool publishes an output schema (helps strict Brains)."""
     for tool in build_perception_tools("http://x"):
         assert tool.schema.output_schema is not None, tool.name
+
+
+def test_register_perception_tools_wraps_with_resolver() -> None:
+    reg = ToolRegistry()
+    registered = register_perception_tools(reg, "http://x")
+    assert {t.name for t in registered} == set(PERCEPTION_TOOL_NAMES)
+    # each registered tool is resolver-wrapped so frame refs hydrate before dispatch
+    for name in PERCEPTION_TOOL_NAMES:
+        assert isinstance(reg.get(name), ArtifactResolverMiddleware)
+
+
+def test_register_perception_tools_raw_when_disabled() -> None:
+    reg = ToolRegistry()
+    register_perception_tools(reg, "http://x", resolve_artifacts=False)
+    assert isinstance(reg.get(PERCEPTION_DETECT_OBJECTS), MCPTool)
 
 
 # ---------------------------------------------------------------------------

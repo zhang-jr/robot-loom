@@ -539,6 +539,7 @@ class AgentLoop:
                 robot_id=task.robot_id,
                 subtask_id=task.subtask_id,
                 timeout_s=self._ctx.config.tool.default_timeout_s,
+                artifact_store=self._ctx.artifact_store,
             )
             result = await self._invoke_tool(req, tool_ctx)
             return result.model_dump()

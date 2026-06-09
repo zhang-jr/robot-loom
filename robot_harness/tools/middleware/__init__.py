@@ -1,5 +1,6 @@
 """Tool middleware — cross-cutting concerns applied via a decorator chain."""
 
+from robot_harness.tools.middleware.artifact_resolver import ArtifactResolverMiddleware
 from robot_harness.tools.middleware.base import ToolMiddleware, build_chain
 from robot_harness.tools.middleware.cache import CacheMiddleware
 from robot_harness.tools.middleware.cancel import CancelMiddleware
@@ -15,6 +16,7 @@ from robot_harness.tools.middleware.timeout import TimeoutMiddleware
 from robot_harness.tools.middleware.trace import TraceMiddleware
 
 __all__ = [
+    "ArtifactResolverMiddleware",
     "CacheMiddleware",
     "CancelMiddleware",
     "CircuitBreakerMiddleware",

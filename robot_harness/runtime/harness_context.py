@@ -10,6 +10,7 @@ from robot_harness.embodiment.base import EmbodimentAdapter, Frame
 from robot_harness.memory.base import Memory
 from robot_harness.safety.envelope import SafetyEnvelope
 from robot_harness.skill.registry import SkillRegistry
+from robot_harness.tools.artifacts import ArtifactStore, InMemoryArtifactStore
 from robot_harness.tools.base import BrainProfile, ToolRegistry
 from robot_harness.tools.cognitive.base import CognitiveScaffoldStore
 from robot_harness.tools.cognitive.plan_tool import PlannerStore, PlanTool
@@ -34,6 +35,8 @@ class HarnessContext:
     skill_registry: SkillRegistry
     safety_envelope: SafetyEnvelope
     memory: Memory
+    # Session-scoped out-of-band store for large tool I/O (images, depth, masks).
+    artifact_store: ArtifactStore = field(default_factory=InMemoryArtifactStore)
     session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     # robot_id → list of cognitive stores (plan, reflection, …)
     scaffold_stores: dict[str, list[CognitiveScaffoldStore]] = field(default_factory=dict)
