@@ -4,9 +4,8 @@ This exercises the full data plane through AgentLoop (the path unit tests
 historically bypassed by feeding image_b64 by hand):
 
     capture_frame  → image offloaded to ArtifactStore, returns `frame` ref
-    write-back     → ref (small) lands in Memory
-    query          → next turn's MemoryView carries the ref
-    Brain          → reads ref from memory, calls detect(frame=ref)
+    tool message   → ref (small) lands in the conversation as a role:tool message (ADR-025)
+    Brain          → reads ref from the tool message, calls detect(frame=ref)
     resolver       → hydrates ref → image_b64 from the store
     consumer       → receives the real bytes, never the raw image via the LLM
 """
@@ -14,11 +13,12 @@ historically bypassed by feeding image_b64 by hand):
 from __future__ import annotations
 
 import base64
+import json
 from typing import Any
 
 import pytest
 
-from robot_harness.brain.base import BrainDecision, MemoryView, Task, ToolCallRequest
+from robot_harness.brain.base import BrainDecision, Task, ToolCallRequest
 from robot_harness.embodiment.base import Frame, RobotState
 from robot_harness.runtime.agent_loop import AgentLoop
 from robot_harness.runtime.harness_context import HarnessContext
@@ -85,11 +85,20 @@ class _FakeDetect:
         pass
 
 
-def _find_frame_ref(mv: MemoryView) -> dict[str, Any] | None:
-    for hit in mv.episodic_hits:
-        obs = (hit.get("content") or {}).get("observation") or {}
-        if isinstance(obs.get("frame"), dict):
-            return obs["frame"]
+def _find_frame_ref(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The frame ref travels as a native role:tool message (ADR-025). A real LLM
+    reads the small ref from that message and copies it into the detect call;
+    here we parse it back out of the tool message content."""
+    for m in messages:
+        if m.get("role") != "tool":
+            continue
+        try:
+            payload = json.loads(m.get("content") or "{}")
+        except json.JSONDecodeError:
+            continue
+        frame = payload.get("frame")
+        if isinstance(frame, dict):
+            return frame
     return None
 
 
@@ -103,7 +112,7 @@ class _HandoffBrain:
     def supports_streaming(self) -> bool:
         return False
 
-    async def decide(self, task: Task, mv: MemoryView, tools: list[Any]) -> BrainDecision:
+    async def decide(self, messages: list[dict[str, Any]], tools: list[Any]) -> BrainDecision:
         self._turn += 1
         if self._turn == 1:
             return BrainDecision(
@@ -112,7 +121,7 @@ class _HandoffBrain:
                     ToolCallRequest(tool_name="robot.capture_frame", args={"robot_id": "r0"})
                 ],
             )
-        ref = _find_frame_ref(mv)
+        ref = _find_frame_ref(messages)
         if ref is not None:
             return BrainDecision(
                 decision_type="tool_call",
@@ -124,9 +133,6 @@ class _HandoffBrain:
                 ],
             )
         return BrainDecision(decision_type="plan", message="no frame ref recalled")
-
-    async def replan(self, history: Any, critic_signal: Any) -> BrainDecision:
-        return BrainDecision(decision_type="give_up", message="n/a")
 
 
 @pytest.mark.asyncio

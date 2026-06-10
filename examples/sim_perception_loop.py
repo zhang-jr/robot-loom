@@ -6,7 +6,8 @@ services exist — only the mock perception/critic below get swapped for real
 MCP/HTTP server URLs, and ScriptedBrain for LiteLLMBrain:
 
     world_state : robot.capture_frame (camera) + robot.get_state (proprioception)
-    memory      : AgentLoop queries memory each turn → memory_view → Brain
+    memory      : observations live in the native conversation; long-term recall is
+                  the on-demand memory.query tool (ADR-024 / ADR-025)
     server_tools: perception.detect (mock here) + robot_sdk.reactive_grasp (sim verb)
     critic      : MockProgressCritic (mock here) → ReplanPolicy → writes episodic memory
     loop        : AgentLoop.run
@@ -30,14 +31,7 @@ from typing import Any
 
 import httpx
 
-from robot_harness.brain.base import (
-    BrainDecision,
-    CriticSignal,
-    ExecutionHistory,
-    MemoryView,
-    Task,
-    ToolCallRequest,
-)
+from robot_harness.brain.base import BrainDecision, Task, ToolCallRequest
 from robot_harness.config.schema import EmbodimentBackendConfig, HarnessConfig
 from robot_harness.critic.base import CriticVerdict
 from robot_harness.embodiment.base import Frame
@@ -122,13 +116,10 @@ class ScriptedBrain:
     def supports_streaming(self) -> bool:
         return False
 
-    async def decide(self, task: Task, memory_view: MemoryView, tools: list) -> BrainDecision:  # type: ignore[type-arg]
+    async def decide(self, messages: list, tools: list) -> BrainDecision:  # type: ignore[type-arg]
         d = self._decisions[min(self._i, len(self._decisions) - 1)]
         self._i += 1
         return d
-
-    async def replan(self, history: ExecutionHistory, critic_signal: CriticSignal) -> BrainDecision:
-        return BrainDecision(decision_type="plan", message="recovered")
 
 
 def _call(tool: str, args: dict[str, Any]) -> BrainDecision:

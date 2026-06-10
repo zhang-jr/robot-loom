@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from robot_harness.brain.base import BrainDecision, CriticSignal, ExecutionHistory, MemoryView, Task
+from robot_harness.brain.base import BrainDecision, Task
 from robot_harness.runtime.agent_loop import AgentLoop
 from robot_harness.runtime.harness_context import HarnessContext
 from robot_harness.tools.base import ToolContext, ToolResult
@@ -29,16 +29,13 @@ class _MockBrain:
     def supports_streaming(self) -> bool:
         return False
 
-    async def decide(self, task: Task, memory_view: MemoryView, tools: list[Any]) -> BrainDecision:
+    async def decide(self, messages: list[Any], tools: list[Any]) -> BrainDecision:
         if self._call_count < len(self._decisions):
             d = self._decisions[self._call_count]
         else:
             d = BrainDecision(decision_type="give_up", message="exhausted")
         self._call_count += 1
         return d
-
-    async def replan(self, history: ExecutionHistory, critic_signal: CriticSignal) -> BrainDecision:
-        return BrainDecision(decision_type="give_up", message="replan not supported in mock")
 
 
 # ---------------------------------------------------------------------------
@@ -143,19 +140,19 @@ async def test_tool_call_then_plan() -> None:
 
 
 class _CapturingBrain:
-    """Mock Brain that records the MemoryView it receives on each decide()."""
+    """Mock Brain that snapshots the conversation it receives on each decide()."""
 
     def __init__(self, decisions: list[BrainDecision]) -> None:
         self._decisions = list(decisions)
         self._i = 0
-        self.seen_views: list[MemoryView] = []
+        self.seen_messages: list[list[dict[str, Any]]] = []
 
     @property
     def supports_streaming(self) -> bool:
         return False
 
-    async def decide(self, task: Task, memory_view: MemoryView, tools: list[Any]) -> BrainDecision:
-        self.seen_views.append(memory_view)
+    async def decide(self, messages: list[dict[str, Any]], tools: list[Any]) -> BrainDecision:
+        self.seen_messages.append(list(messages))  # snapshot the conversation so far
         d = (
             self._decisions[self._i]
             if self._i < len(self._decisions)
@@ -163,9 +160,6 @@ class _CapturingBrain:
         )
         self._i += 1
         return d
-
-    async def replan(self, history: ExecutionHistory, critic_signal: CriticSignal) -> BrainDecision:
-        return BrainDecision(decision_type="give_up", message="n/a")
 
 
 class _DetectTool:
@@ -196,12 +190,13 @@ class _DetectTool:
 
 
 @pytest.mark.asyncio
-async def test_observations_written_back_are_recalled_next_turn() -> None:
-    """The observation→Brain edge: what a turn observes, the next turn recalls.
+async def test_observations_flow_back_as_tool_messages_next_turn() -> None:
+    """The observation→Brain edge via native tool messages (ADR-025).
 
-    Without this, the Brain re-observes forever (the close-loop spin). A
-    detection written to object memory after turn 1 must appear in the
-    MemoryView the Brain receives on turn 2.
+    A tool result becomes a ``role:tool`` message in the conversation the loop
+    owns, so the next ``decide()`` sees it. Without this edge the Brain
+    re-observes forever (the close-loop spin). What a turn observes, the next
+    turn sees in its messages.
     """
     from robot_harness.brain.base import ToolCallRequest
     from robot_harness.tools.memory.spatial_hub_adapter import SpatialHubMemory
@@ -217,11 +212,24 @@ async def test_observations_written_back_are_recalled_next_turn() -> None:
     result = await AgentLoop(brain, ctx, max_turns=5).run(_make_task())
 
     assert result.outcome == "success"
-    # turn 1: nothing observed yet
-    assert brain.seen_views[0].object_hits == []
-    # turn 2: the cube detected on turn 1 is recalled
-    recalled = brain.seen_views[1].object_hits
-    assert any(h["content"].get("label") == "red cube" for h in recalled)
+    # turn 1: only system + user, no tool result yet
+    assert all(m["role"] != "tool" for m in brain.seen_messages[0])
+    # turn 2: the cube detected on turn 1 is present as a role:tool message
+    tool_msgs = [m for m in brain.seen_messages[1] if m["role"] == "tool"]
+    assert tool_msgs and any("red cube" in m["content"] for m in tool_msgs)
+
+
+@pytest.mark.asyncio
+async def test_memory_query_registered_for_on_demand_recall() -> None:
+    """Long-term recall is an on-demand brain-visible tool, not an auto-query (ADR-024)."""
+    from robot_harness.tools.base import BrainProfile
+    from robot_harness.tools.memory.spatial_hub_adapter import SpatialHubMemory
+
+    ctx = HarnessContext.build(memory=SpatialHubMemory())
+    assert "memory.query" in ctx.tool_registry
+    specs = ctx.tool_registry.export_for_brain(BrainProfile(name="openai"))
+    names = {(s.get("function") or s).get("name") for s in specs}
+    assert "memory.query" in names
 
 
 @pytest.mark.asyncio

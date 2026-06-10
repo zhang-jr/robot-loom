@@ -3,29 +3,28 @@
 Orchestrates: Brain.decide() → tool dispatch (with safety check) → result
 → Brain (next turn), repeating until completion or give_up.
 
+The loop owns the conversation (ADR-025): a growing native tool-use message list
+``system → user → assistant(tool_calls) → tool(result) → …``. Recent observations
+and the Brain's own prior turns live in that list, so there is no per-turn Memory
+round-trip; long-term recall is the on-demand ``memory.query`` tool (ADR-024), and
+replanning is just a critic-feedback message appended to the same conversation.
+
 Wired in:
 - Optional Critic integration with ReplanPolicy (ADR-010)
-- EpisodicMemory write-back on task completion
-- Multi-type memory query (object / place / episodic / semantic)
-- Cognitive scaffold context compression hook (ADR-018)
+- EpisodicMemory write-back on task completion + per-turn observation persistence
+- Cognitive scaffold (plan / reflection) injected into the opening turn (ADR-018)
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from robot_harness.brain.base import (
-    Brain,
-    CriticSignal,
-    ExecutionHistory,
-    MemoryView,
-    Task,
-    ToolCallRequest,
-)
+from robot_harness.brain.base import Brain, BrainDecision, Message, Task, ToolCallRequest
 from robot_harness.critic.base import Critic, CriticVerdict
 from robot_harness.critic.heuristic_fallback import HeuristicCritic
 from robot_harness.critic.replan_policy import ReplanPolicy, SensorHeuristic
@@ -37,10 +36,22 @@ from robot_harness.errors import (
     ToolCancelledError,
     ToolError,
 )
-from robot_harness.memory.base import MemoryEntry, MemoryQuery
+from robot_harness.memory.base import MemoryEntry
 from robot_harness.observability.tracer import tracer
 from robot_harness.runtime.harness_context import HarnessContext
 from robot_harness.tools.base import BrainProfile, ToolContext, ToolResult
+
+_SYSTEM_PROMPT = """\
+You are a robot task planner. You have access to tools that control robot hardware.
+Plan step by step. Call tools one or a few at a time. Never skip the safety check tool.
+When the task is complete, respond with a final message explaining the outcome.
+Do NOT call tools after the task is done — just respond naturally.
+
+Recent observations and your prior tool results are in the conversation above; use
+them directly. Call the memory.query tool only to recall facts NOT in the
+conversation (e.g. where an object was seen in an earlier task, why a past attempt
+failed) — don't re-query for what you can already see.
+"""
 
 
 class AgentResult(BaseModel):
@@ -64,7 +75,7 @@ class AgentLoop:
         max_turns:       Hard cap on Brain decision cycles per task.
         critic:          Optional progress-evaluation Critic (ADR-010).
         critic_interval: Run the Critic every N turns (default: every 3 turns).
-        max_replan:      Max Brain.replan() calls per task before aborting.
+        max_replan:      Max critic-driven replans per task before aborting.
     """
 
     def __init__(
@@ -95,8 +106,9 @@ class AgentLoop:
         )
 
         tool_specs = self._ctx.tool_registry.export_for_brain(BrainProfile(name="openai"))
-        history = ExecutionHistory()
         all_tool_results: list[dict[str, Any]] = []
+        # The loop owns the conversation (ADR-025); it grows across turns.
+        messages = self._initial_messages(task)
         replan_count = 0
         sensor = SensorHeuristic()
         replan_policy = ReplanPolicy()
@@ -111,22 +123,14 @@ class AgentLoop:
                 robot_id=task.robot_id,
             )
 
-            # --- Cognitive scaffold context compression hook ---
-            scaffold_injection = self._ctx.format_scaffold_for_injection(task.robot_id)
-            if scaffold_injection:
-                tracer.event(
-                    "agent_loop.scaffold_injection",
-                    trace_id=trace_id,
-                    robot_id=task.robot_id,
-                    chars=len(scaffold_injection),
-                )
-
-            memory_view = await self._query_memory(task)
-            if scaffold_injection:
-                memory_view.scaffold_context = scaffold_injection
-
-            decision = await self._brain.decide(task, memory_view, tool_specs)
+            decision = await self._brain.decide(messages, tool_specs)
             decision.trace_id = trace_id
+            if decision.decision_type == "tool_call":
+                self._assign_call_ids(decision, turn)
+            # Append the Brain's own turn to the conversation so the next turn (and
+            # the tool messages below) sees it — the assistant message must precede
+            # its tool results in the native protocol.
+            messages.append(self._assistant_message(decision))
 
             if decision.decision_type == "give_up":
                 tracer.event("agent_loop.give_up", trace_id=trace_id, message=decision.message)
@@ -159,6 +163,11 @@ class AgentLoop:
             if decision.decision_type == "tool_call":
                 turn_results = await self._execute_tool_calls(decision.tool_calls, task, trace_id)
                 all_tool_results.extend(turn_results)
+                # Each result becomes a native role:tool message keyed by tool_call_id;
+                # blobs are stripped so the raw image never enters the LLM (the small
+                # artifact ref from ISS-017 does flow through).
+                for req, res in zip(decision.tool_calls, turn_results, strict=True):
+                    messages.append(self._tool_message(req.call_id, res))
                 await self._write_observations(task, turn, turn_results, trace_id)
 
                 any_error = any(not r.get("success") for r in turn_results)
@@ -166,14 +175,6 @@ class AgentLoop:
                     sensor.error_count += 1
                 else:
                     sensor.error_count = max(0, sensor.error_count - 1)
-
-                history.turns.append(
-                    {
-                        "turn": turn,
-                        "tool_calls": [tc.model_dump() for tc in decision.tool_calls],
-                        "results": turn_results,
-                    }
-                )
 
                 # Check if any tool result signals task completion
                 for r in turn_results:
@@ -198,11 +199,6 @@ class AgentLoop:
                     )
 
                     if verdict is not None:
-                        critic_signal = CriticSignal(
-                            state=verdict.state,
-                            confidence=verdict.confidence,
-                            evidence=verdict.evidence,
-                        )
                         # Write critic verdict to episodic memory
                         await self._write_critic_verdict(task, verdict, trace_id)
 
@@ -241,30 +237,16 @@ class AgentLoop:
                                     robot_id=task.robot_id,
                                 )
                             replan_count += 1
-                            history.last_critic_signal = verdict.state
-                            new_decision = await self._brain.replan(history, critic_signal)
-                            new_decision.trace_id = trace_id
+                            # Replan = another turn (ADR-025): append the critic
+                            # feedback as a user message; the next decide() replans
+                            # with the full conversation in view.
+                            messages.append(self._critic_feedback_message(verdict))
                             tracer.event(
                                 "agent_loop.replan",
                                 trace_id=trace_id,
                                 replan_count=replan_count,
                                 critic_state=verdict.state,
                             )
-                            if new_decision.decision_type == "tool_call":
-                                turn_results = await self._execute_tool_calls(
-                                    new_decision.tool_calls, task, trace_id
-                                )
-                                all_tool_results.extend(turn_results)
-                                await self._write_observations(task, turn, turn_results, trace_id)
-                                history.turns.append(
-                                    {
-                                        "turn": f"{turn}.replan",
-                                        "tool_calls": [
-                                            tc.model_dump() for tc in new_decision.tool_calls
-                                        ],
-                                        "results": turn_results,
-                                    }
-                                )
 
                         sensor.unchanged_count = 0  # reset after critic evaluation
                     else:
@@ -314,6 +296,84 @@ class AgentLoop:
         )
         await self._write_episode(task, result, trace_id)
         return result
+
+    # ------------------------------------------------------------------
+    # Conversation helpers (native tool-use message protocol, ADR-025)
+    # ------------------------------------------------------------------
+
+    def _initial_messages(self, task: Task) -> list[Message]:
+        """Build the opening ``[system, user]`` conversation for a task.
+
+        Any cognitive scaffold (a plan/reflection set before the loop) is injected
+        into the opening user turn. During the task, plan/reflection updates are
+        visible via their tool results already in the conversation; re-injection is
+        only for the opening turn (and, later, post-compression recovery, ADR-018).
+        """
+        sections = [f"Task: {task.description}"]
+        if task.constraints:
+            sections.append(f"Constraints: {'; '.join(task.constraints)}")
+        scaffold = self._ctx.format_scaffold_for_injection(task.robot_id)
+        if scaffold:
+            sections.append(scaffold)
+        return [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": "\n\n".join(sections)},
+        ]
+
+    @staticmethod
+    def _assign_call_ids(decision: BrainDecision, turn: int) -> None:
+        """Ensure every tool call has an id, so the assistant message and its tool
+        results reference the same ``tool_call_id`` (real backends emit ids; mock
+        Brains may not)."""
+        for i, tc in enumerate(decision.tool_calls):
+            if not tc.call_id:
+                tc.call_id = f"call_{turn}_{i}"
+
+    def _assistant_message(self, decision: BrainDecision) -> Message:
+        """The assistant turn to append to history — the Brain's verbatim message
+        when it provided one, else synthesized from the decision."""
+        if decision.assistant_message is not None:
+            return decision.assistant_message
+        if decision.decision_type == "tool_call":
+            return {
+                "role": "assistant",
+                "content": decision.message or None,
+                "tool_calls": [
+                    {
+                        "id": tc.call_id,
+                        "type": "function",
+                        "function": {"name": tc.tool_name, "arguments": json.dumps(tc.args)},
+                    }
+                    for tc in decision.tool_calls
+                ],
+            }
+        return {"role": "assistant", "content": decision.message or decision.plan or ""}
+
+    def _tool_message(self, call_id: str, result: dict[str, Any]) -> Message:
+        """Render one tool result as a native ``role:tool`` message. Blobs are
+        stripped (the raw image never enters the LLM); the small artifact ref does."""
+        if result.get("success"):
+            output = result.get("output") or {}
+            facts = {k: v for k, v in output.items() if k not in self._OBSERVATION_BLOB_KEYS}
+            content = json.dumps(facts, default=str)
+        else:
+            content = json.dumps(
+                {"error": result.get("error"), "error_type": result.get("error_type")},
+                default=str,
+            )
+        return {"role": "tool", "tool_call_id": call_id, "content": content}
+
+    @staticmethod
+    def _critic_feedback_message(verdict: CriticVerdict) -> Message:
+        """Fold a replan into the conversation as a critic-feedback user turn."""
+        return {
+            "role": "user",
+            "content": (
+                f"Critic feedback: progress={verdict.state} "
+                f"(confidence={verdict.confidence:.2f}). Evidence: {verdict.evidence or 'none'}. "
+                "Reconsider whether to continue, try a different approach, or stop."
+            ),
+        }
 
     # ------------------------------------------------------------------
     # Critic helpers
@@ -414,14 +474,18 @@ class AgentLoop:
     async def _write_observations(
         self, task: Task, turn: int, turn_results: list[dict[str, Any]], trace_id: str
     ) -> None:
-        """Write each turn's structured observations back to memory (memory-first).
+        """Persist each turn's structured observations to long-term memory.
 
-        Closes the observation→Brain edge: next turn's :meth:`_query_memory`
-        surfaces these so the Brain knows what it already saw / did, instead of
-        re-observing forever. Detections go to object memory; state / frame /
-        verb results go to episodic. Image and depth blobs are stripped — only
-        structured facts are stored. Tagged with ``task.task_id`` so the embedded
-        backend's any-match tag filter keeps recall scoped to this task.
+        This is the durable record, recalled later on demand via the
+        ``memory.query`` tool (ADR-024) — NOT the per-turn observation→Brain edge,
+        which now rides the working-memory buffer (``scaffold_context``). Detections
+        go to object memory; state / frame / verb results go to episodic. Image and
+        depth blobs are stripped — only structured facts are stored. Tagged with
+        ``task.task_id`` so the embedded backend's any-match tag filter keeps recall
+        scoped to this task.
+
+        (Narrowing what gets written each tick — to keep episodic semantically pure —
+        is the next step, ADR-024 待验证 / working-memory-and-recall.md priority 3.)
         """
         for r in turn_results:
             if not r.get("success"):
@@ -466,62 +530,6 @@ class AgentLoop:
                 memory_type=entry.memory_type,
                 error=str(exc),
             )
-
-    async def _query_memory(self, task: Task) -> MemoryView:
-        """Query all memory types for context relevant to the task (best-effort)."""
-        view = MemoryView()
-        try:
-            # This task's own observations, most-recent first. Scoped by task_id so
-            # the backend's any-match tag filter can't pull other tasks' entries or
-            # critic verdicts (tagged without task_id).
-            episodic = await self._ctx.memory.query(
-                MemoryQuery(
-                    memory_type="episodic",
-                    robot_id=task.robot_id,
-                    text=task.description,
-                    tags=[task.task_id],
-                    top_k=10,
-                )
-            )
-            view.episodic_hits = [h.model_dump() for h in episodic]
-        except Exception as exc:  # noqa: BLE001
-            tracer.event(
-                "memory.query_failed",
-                robot_id=task.robot_id,
-                memory_type="episodic",
-                error=str(exc),
-            )
-        try:
-            objects = await self._ctx.memory.query(
-                MemoryQuery(
-                    memory_type="object",
-                    robot_id=task.robot_id,
-                    text=task.description,
-                    tags=[task.task_id],
-                    top_k=10,
-                )
-            )
-            view.object_hits = [h.model_dump() for h in objects]
-        except Exception as exc:  # noqa: BLE001
-            tracer.event(
-                "memory.query_failed",
-                robot_id=task.robot_id,
-                memory_type="object",
-                error=str(exc),
-            )
-        try:
-            semantic = await self._ctx.memory.query(
-                MemoryQuery(memory_type="semantic", robot_id=task.robot_id, text=task.description)
-            )
-            view.semantic_hits = [h.model_dump() for h in semantic]
-        except Exception as exc:  # noqa: BLE001
-            tracer.event(
-                "memory.query_failed",
-                robot_id=task.robot_id,
-                memory_type="semantic",
-                error=str(exc),
-            )
-        return view
 
     # ------------------------------------------------------------------
     # Tool dispatch

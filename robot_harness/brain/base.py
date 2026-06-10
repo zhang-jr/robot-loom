@@ -1,4 +1,13 @@
-"""Brain Protocol — the LLM/VLM slow-thinking decision layer."""
+"""Brain Protocol — the LLM/VLM slow-thinking decision layer.
+
+The Brain follows the **native tool-use message protocol** (ADR-025): the
+AgentLoop owns a growing conversation (`system → user → assistant(tool_calls) →
+tool(result) → …`) and hands it to :meth:`Brain.decide` each turn. The Brain is
+a thin "given this conversation + tool specs, decide the next step" call — it
+does not own session state, build prompts, or round-trip through Memory. Recent
+observations live in the conversation itself; cross-session recall is the
+on-demand ``memory.query`` tool (ADR-024).
+"""
 
 from __future__ import annotations
 
@@ -8,6 +17,11 @@ from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from robot_harness.tools.base import BrainToolSpec
+
+# A provider-format chat message (``{"role": ..., "content": ...}``, plus
+# ``tool_calls`` on assistant turns and ``tool_call_id`` on tool turns). Kept as a
+# loose dict so it passes straight to the LLM backend (OpenAI / Anthropic / …).
+Message = dict[str, Any]
 
 
 class Task(BaseModel):
@@ -30,40 +44,21 @@ class ToolCallRequest(BaseModel):
 
 
 class BrainDecision(BaseModel):
-    """What the Brain decided to do next."""
+    """What the Brain decided to do next.
+
+    ``assistant_message`` is the raw assistant turn (provider format, wire tool
+    names) the AgentLoop appends to the conversation before dispatching the tool
+    calls — so the next turn sees the Brain's own prior output and the tool
+    results that answered it. The loop synthesizes one if the Brain leaves it None.
+    """
 
     decision_type: Literal["tool_call", "plan", "give_up", "ask_user"]
     tool_calls: list[ToolCallRequest] = Field(default_factory=list)
     plan: str = ""
     message: str = ""
     trace_id: str = ""
+    assistant_message: Message | None = None
     raw_response: dict[str, Any] = Field(default_factory=dict)
-
-
-class MemoryView(BaseModel):
-    """A snapshot of relevant memory passed to the Brain."""
-
-    object_hits: list[dict[str, Any]] = []
-    place_hits: list[dict[str, Any]] = []
-    episodic_hits: list[dict[str, Any]] = []
-    semantic_hits: list[dict[str, Any]] = []
-    # Cognitive scaffold re-injected after context compression (ADR-018).
-    scaffold_context: str | None = None
-
-
-class ExecutionHistory(BaseModel):
-    """History of prior turns in the current task — fed to replan()."""
-
-    turns: list[dict[str, Any]] = []
-    last_critic_signal: str = ""
-
-
-class CriticSignal(BaseModel):
-    """Critic verdict forwarded to the Brain for replanning."""
-
-    state: Literal["progress", "completion", "failure", "unchanged"]
-    confidence: float
-    evidence: str
 
 
 @runtime_checkable
@@ -77,16 +72,17 @@ class Brain(Protocol):
 
     async def decide(
         self,
-        task: Task,
-        memory_view: MemoryView,
+        messages: list[Message],
         tools: list[BrainToolSpec],
-    ) -> BrainDecision: ...
+    ) -> BrainDecision:
+        """Decide the next step given the running conversation and tool specs.
 
-    async def replan(
-        self,
-        history: ExecutionHistory,
-        critic_signal: CriticSignal,
-    ) -> BrainDecision: ...
+        ``messages`` is the full provider-format conversation the AgentLoop owns
+        and grows across turns (it already carries the task, prior tool calls,
+        and their results). Replanning is just another turn — a critic-feedback
+        message the loop appended — not a separate entry point.
+        """
+        ...
 
     @property
     def supports_streaming(self) -> bool: ...
