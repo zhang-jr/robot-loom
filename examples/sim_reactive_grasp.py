@@ -63,7 +63,7 @@ class ScriptedBrain:
     def supports_streaming(self) -> bool:
         return False
 
-    async def decide(self, messages: list, tools: list) -> BrainDecision:  # type: ignore[type-arg]
+    async def decide(self, messages: list, tools: list, **_: object) -> BrainDecision:  # type: ignore[type-arg]
         d = self._decisions[min(self._i, len(self._decisions) - 1)]
         self._i += 1
         return d

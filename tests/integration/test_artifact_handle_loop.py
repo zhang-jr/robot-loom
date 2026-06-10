@@ -112,7 +112,9 @@ class _HandoffBrain:
     def supports_streaming(self) -> bool:
         return False
 
-    async def decide(self, messages: list[dict[str, Any]], tools: list[Any]) -> BrainDecision:
+    async def decide(
+        self, messages: list[dict[str, Any]], tools: list[Any], **_: Any
+    ) -> BrainDecision:
         self._turn += 1
         if self._turn == 1:
             return BrainDecision(

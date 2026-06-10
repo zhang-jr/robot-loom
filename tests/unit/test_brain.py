@@ -171,6 +171,32 @@ async def test_brain_decide_raises_on_backend_exception() -> None:
             await brain.decide(_messages(), [])
 
 
+@pytest.mark.asyncio
+async def test_brain_errors_carry_trace_context() -> None:
+    """Caller-provided trace_id/robot_id tag Brain exceptions, keeping the Brain
+    layer on the same trace as the task's tool/critic/memory spans (ADR-008)."""
+    brain = LiteLLMBrain(BrainConfig(model="openai/gpt-4o"))
+
+    with patch("litellm.acompletion", new=AsyncMock(side_effect=RuntimeError("boom"))):
+        with pytest.raises(BrainOutputInvalidError) as excinfo:
+            await brain.decide(_messages(), [], trace_id="trace-42", robot_id="r0")
+
+    assert excinfo.value.trace_id == "trace-42"
+    assert excinfo.value.robot_id == "r0"
+
+
+@pytest.mark.asyncio
+async def test_brain_decision_uses_caller_trace_id() -> None:
+    """decide() must not mint its own trace_id when the loop provides one."""
+    brain = LiteLLMBrain(BrainConfig(model="openai/gpt-4o"))
+    fake = _text_response("Step 1: perceive.")
+
+    with patch("litellm.acompletion", new=AsyncMock(return_value=fake)):
+        decision = await brain.decide(_messages(), [], trace_id="trace-42", robot_id="r0")
+
+    assert decision.trace_id == "trace-42"
+
+
 # ---------------------------------------------------------------------------
 # Tests: protocol / property
 # ---------------------------------------------------------------------------

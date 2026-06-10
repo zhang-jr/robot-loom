@@ -30,6 +30,7 @@ from robot_harness.critic.heuristic_fallback import HeuristicCritic
 from robot_harness.critic.replan_policy import ReplanPolicy, SensorHeuristic
 from robot_harness.embodiment.base import Frame
 from robot_harness.errors import (
+    BrainOutputInvalidError,
     CriticDisagreementError,
     CriticServiceDown,
     ReplanLoopExceededError,
@@ -123,7 +124,9 @@ class AgentLoop:
                 robot_id=task.robot_id,
             )
 
-            decision = await self._brain.decide(messages, tool_specs)
+            decision = await self._brain.decide(
+                messages, tool_specs, trace_id=trace_id, robot_id=task.robot_id
+            )
             decision.trace_id = trace_id
             if decision.decision_type == "tool_call":
                 self._assign_call_ids(decision, turn)
@@ -165,7 +168,7 @@ class AgentLoop:
                 all_tool_results.extend(turn_results)
                 # Each result becomes a native role:tool message keyed by tool_call_id;
                 # blobs are stripped so the raw image never enters the LLM (the small
-                # artifact ref from ISS-017 does flow through).
+                # artifact ref does flow through).
                 for req, res in zip(decision.tool_calls, turn_results, strict=True):
                     messages.append(self._tool_message(req.call_id, res))
                 await self._write_observations(task, turn, turn_results, trace_id)
@@ -323,11 +326,31 @@ class AgentLoop:
     @staticmethod
     def _assign_call_ids(decision: BrainDecision, turn: int) -> None:
         """Ensure every tool call has an id, so the assistant message and its tool
-        results reference the same ``tool_call_id`` (real backends emit ids; mock
-        Brains may not)."""
+        results reference the same ``tool_call_id`` (some backends — local vLLM /
+        Ollama — emit tool calls without ids; mock Brains may too).
+
+        The backfilled id is written to BOTH copies of the tool calls: the parsed
+        ``decision.tool_calls`` (which keys the role:tool results) and the raw
+        ``decision.assistant_message`` (which goes back to the LLM). If only the
+        former were patched, the conversation would carry an assistant turn whose
+        tool_call ids don't match the tool results that follow — strict providers
+        reject that history outright.
+        """
         for i, tc in enumerate(decision.tool_calls):
             if not tc.call_id:
                 tc.call_id = f"call_{turn}_{i}"
+        am = decision.assistant_message
+        if am is not None:
+            wire_calls = am.get("tool_calls") or []
+            if len(wire_calls) != len(decision.tool_calls):
+                raise BrainOutputInvalidError(
+                    f"assistant_message carries {len(wire_calls)} tool_calls but the "
+                    f"decision parsed {len(decision.tool_calls)} — Brain protocol violation",
+                    trace_id=decision.trace_id,
+                )
+            for tc, wire in zip(decision.tool_calls, wire_calls, strict=True):
+                if not wire.get("id"):
+                    wire["id"] = tc.call_id
 
     def _assistant_message(self, decision: BrainDecision) -> Message:
         """The assistant turn to append to history — the Brain's verbatim message
@@ -478,14 +501,14 @@ class AgentLoop:
 
         This is the durable record, recalled later on demand via the
         ``memory.query`` tool (ADR-024) — NOT the per-turn observation→Brain edge,
-        which now rides the working-memory buffer (``scaffold_context``). Detections
+        which rides the native conversation the loop owns (ADR-025). Detections
         go to object memory; state / frame / verb results go to episodic. Image and
         depth blobs are stripped — only structured facts are stored. Tagged with
         ``task.task_id`` so the embedded backend's any-match tag filter keeps recall
         scoped to this task.
 
         (Narrowing what gets written each tick — to keep episodic semantically pure —
-        is the next step, ADR-024 待验证 / working-memory-and-recall.md priority 3.)
+        is the next step, ADR-024 priority 3.)
         """
         for r in turn_results:
             if not r.get("success"):

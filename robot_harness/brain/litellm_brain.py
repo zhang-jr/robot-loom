@@ -56,11 +56,19 @@ class LiteLLMBrain:
         self,
         messages: list[Message],
         tools: list[dict[str, Any]],
+        *,
+        trace_id: str = "",
+        robot_id: str = "",
     ) -> BrainDecision:
-        trace_id = str(uuid.uuid4())
-        wire_tools, name_map = self._sanitize_tool_specs(tools, trace_id)
+        # Prefer the caller's (AgentLoop's) task-level trace_id so the Brain span
+        # joins the same trace as the task's tool / critic / memory spans; fall
+        # back to a fresh id only for standalone calls (e.g. direct testing).
+        trace_id = trace_id or str(uuid.uuid4())
+        wire_tools, name_map = self._sanitize_tool_specs(tools, trace_id, robot_id)
 
-        with tracer.span("brain.decide", trace_id=trace_id, model=self._cfg.model):
+        with tracer.span(
+            "brain.decide", trace_id=trace_id, robot_id=robot_id, model=self._cfg.model
+        ):
             try:
                 response = await litellm.acompletion(
                     model=self._cfg.model,
@@ -76,21 +84,23 @@ class LiteLLMBrain:
                 raise BrainTimeoutError(
                     f"Brain timed out after {self._cfg.timeout_s}s",
                     trace_id=trace_id,
+                    robot_id=robot_id,
                 ) from exc
             except Exception as exc:
                 raise BrainOutputInvalidError(
                     f"Brain backend error: {exc}",
                     trace_id=trace_id,
+                    robot_id=robot_id,
                 ) from exc
 
-        return self._parse_response(response, trace_id, name_map)
+        return self._parse_response(response, trace_id, name_map, robot_id)
 
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
 
     def _sanitize_tool_specs(
-        self, tools: list[dict[str, Any]], trace_id: str
+        self, tools: list[dict[str, Any]], trace_id: str, robot_id: str = ""
     ) -> tuple[list[dict[str, Any]], dict[str, str]]:
         """Rewrite each tool's function name to the provider-legal charset.
 
@@ -111,6 +121,7 @@ class LiteLLMBrain:
                 raise BrainOutputInvalidError(
                     f"Tool name collision: '{real}' and '{existing}' both sanitize to '{wire}'",
                     trace_id=trace_id,
+                    robot_id=robot_id,
                 )
             name_map[wire] = real
             wire_tools.append({**spec, "function": {**fn, "name": wire}})
@@ -148,14 +159,18 @@ class LiteLLMBrain:
         return not has_continuation
 
     def _parse_response(
-        self, response: Any, trace_id: str, name_map: dict[str, str] | None = None
+        self,
+        response: Any,
+        trace_id: str,
+        name_map: dict[str, str] | None = None,
+        robot_id: str = "",
     ) -> BrainDecision:
         try:
             choice = response.choices[0]
             msg = choice.message
         except (AttributeError, IndexError) as exc:
             raise BrainOutputInvalidError(
-                f"Unexpected response structure: {exc}", trace_id=trace_id
+                f"Unexpected response structure: {exc}", trace_id=trace_id, robot_id=robot_id
             ) from exc
 
         # Tool-call path
@@ -182,7 +197,7 @@ class LiteLLMBrain:
                     )
                 except (json.JSONDecodeError, AttributeError) as exc:
                     raise BrainOutputInvalidError(
-                        f"Invalid tool call JSON: {exc}", trace_id=trace_id
+                        f"Invalid tool call JSON: {exc}", trace_id=trace_id, robot_id=robot_id
                     ) from exc
             return BrainDecision(
                 decision_type="tool_call",
@@ -220,4 +235,5 @@ class LiteLLMBrain:
         raise BrainOutputInvalidError(
             f"Unhandled finish_reason='{finish}' with no content",
             trace_id=trace_id,
+            robot_id=robot_id,
         )

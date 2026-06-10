@@ -35,7 +35,7 @@ class LongHorizonMockBrain:
     def __init__(self) -> None:
         self._turn = 0
 
-    async def decide(self, messages: list, tools: list) -> BrainDecision:  # type: ignore[type-arg]
+    async def decide(self, messages: list, tools: list, **_: object) -> BrainDecision:  # type: ignore[type-arg]
         self._turn += 1
 
         if self._turn == 1:

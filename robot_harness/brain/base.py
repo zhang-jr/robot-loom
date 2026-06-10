@@ -74,6 +74,9 @@ class Brain(Protocol):
         self,
         messages: list[Message],
         tools: list[BrainToolSpec],
+        *,
+        trace_id: str = "",
+        robot_id: str = "",
     ) -> BrainDecision:
         """Decide the next step given the running conversation and tool specs.
 
@@ -81,6 +84,11 @@ class Brain(Protocol):
         and grows across turns (it already carries the task, prior tool calls,
         and their results). Replanning is just another turn — a critic-feedback
         message the loop appended — not a separate entry point.
+
+        ``trace_id`` / ``robot_id`` are observability context only: they tag the
+        decide span and any Brain exception so the Brain layer stays on the same
+        trace as the task's tool / critic / memory spans. They never enter the
+        conversation or the prompt.
         """
         ...
 
