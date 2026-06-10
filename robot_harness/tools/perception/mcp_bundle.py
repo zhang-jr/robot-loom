@@ -14,7 +14,24 @@ from __future__ import annotations
 from typing import Any
 
 from robot_harness.errors import ToolBackendUnreachableError
+from robot_harness.tools.artifacts import ARTIFACT_REF_SCHEMA
+from robot_harness.tools.base import Tool, ToolRegistry
 from robot_harness.tools.mcp.client import MCPClientSession, MCPTool
+from robot_harness.tools.middleware.artifact_resolver import ArtifactResolverMiddleware
+from robot_harness.tools.middleware.base import build_chain
+
+# Every perception tool takes its image either inline (``image_b64``) or, when an
+# artifact store is wired, as a ``frame`` ref from robot.capture_frame that the
+# ArtifactResolverMiddleware hydrates into ``image_b64`` before dispatch. JSON
+# Schema can't cleanly express "exactly one of" without oneOf (which strict
+# backends reject), so both are optional and the description states the rule.
+_IMAGE_INPUT_PROPS: dict[str, Any] = {
+    "image_b64": {
+        "type": "string",
+        "description": "Base64-encoded image. Provide this OR `frame`, not both.",
+    },
+    "frame": {**ARTIFACT_REF_SCHEMA, "description": "Frame ref from robot.capture_frame."},
+}
 
 # ---------------------------------------------------------------------------
 # Tool names (string constants — use these instead of inlining literals)
@@ -59,10 +76,7 @@ _DETECTION_SCHEMA = {
 _DETECT_OBJECTS_INPUT: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "image_b64": {
-            "type": "string",
-            "description": "Base64-encoded image (PNG or JPEG).",
-        },
+        **_IMAGE_INPUT_PROPS,
         "prompts": {
             "type": "array",
             "items": {"type": "string"},
@@ -71,7 +85,7 @@ _DETECT_OBJECTS_INPUT: dict[str, Any] = {
         "confidence_threshold": {"type": "number", "default": 0.3, "minimum": 0.0, "maximum": 1.0},
         "max_detections": {"type": "integer", "default": 50, "minimum": 1},
     },
-    "required": ["image_b64", "prompts"],
+    "required": ["prompts"],
 }
 
 _DETECT_OBJECTS_OUTPUT: dict[str, Any] = {
@@ -87,14 +101,14 @@ _DETECT_OBJECTS_OUTPUT: dict[str, Any] = {
 _ESTIMATE_DEPTH_INPUT: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "image_b64": {"type": "string", "description": "Base64-encoded image."},
+        **_IMAGE_INPUT_PROPS,
         "output": {
             "type": "string",
             "enum": ["relative", "metric_if_available"],
             "default": "relative",
         },
     },
-    "required": ["image_b64"],
+    "required": [],
 }
 
 _ESTIMATE_DEPTH_OUTPUT: dict[str, Any] = {
@@ -123,13 +137,13 @@ _ESTIMATE_DEPTH_OUTPUT: dict[str, Any] = {
 _GROUND_PHRASE_INPUT: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "image_b64": {"type": "string"},
+        **_IMAGE_INPUT_PROPS,
         "phrase": {
             "type": "string",
             "description": "Single natural-language phrase to localize (e.g. 'the red mug on the left').",
         },
     },
-    "required": ["image_b64", "phrase"],
+    "required": ["phrase"],
 }
 
 _GROUND_PHRASE_OUTPUT: dict[str, Any] = {
@@ -148,10 +162,10 @@ _GROUND_PHRASE_OUTPUT: dict[str, Any] = {
 _SEGMENT_PROMPTABLE_INPUT: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "image_b64": {"type": "string"},
+        **_IMAGE_INPUT_PROPS,
         "phrase": {"type": "string"},
     },
-    "required": ["image_b64", "phrase"],
+    "required": ["phrase"],
 }
 
 _SEGMENT_PROMPTABLE_OUTPUT: dict[str, Any] = {
@@ -224,6 +238,31 @@ def build_perception_tools(server_url: str) -> list[MCPTool]:
             is_idempotent=True,
         ),
     ]
+
+
+def register_perception_tools(
+    registry: ToolRegistry,
+    server_url: str,
+    *,
+    resolve_artifacts: bool = True,
+) -> list[Tool]:
+    """Build the perception tools and register them, resolver-wrapped by default.
+
+    Each tool is wrapped with :class:`ArtifactResolverMiddleware` so a ``frame``
+    ref from ``robot.capture_frame`` is hydrated into ``image_b64`` before the
+    request reaches the external server. Pass ``resolve_artifacts=False`` to
+    register the raw tools (e.g. when image bytes are always supplied inline).
+
+    Returns the registered tools (wrapped, when applicable).
+    """
+    registered: list[Tool] = []
+    for tool in build_perception_tools(server_url):
+        wrapped: Tool = (
+            build_chain(tool, [ArtifactResolverMiddleware]) if resolve_artifacts else tool
+        )
+        registry.register(wrapped)
+        registered.append(wrapped)
+    return registered
 
 
 async def verify_server_compatibility(

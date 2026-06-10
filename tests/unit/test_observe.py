@@ -67,7 +67,47 @@ async def test_capture_frame_success() -> None:
     res = await tool.invoke({"robot_id": "r0", "camera": "overhead"}, _ctx())
     assert res.success
     assert res.output["camera"] == "overhead"
+    # No artifact store wired → inline fallback keeps image_b64.
     assert res.output["image_b64"] == "abc"
+    assert "frame" not in res.output
+
+
+@pytest.mark.asyncio
+async def test_capture_frame_offloads_to_artifact_store() -> None:
+    """With a store wired, the image is offloaded and replaced by a small ref."""
+    import base64
+
+    from robot_harness.tools.artifacts import InMemoryArtifactStore
+
+    raw = b"\x89PNG-fake-pixels"
+
+    class _ImgAdapter(_FakeAdapter):
+        async def get_camera_frame(self, camera: str) -> Frame:
+            return Frame(
+                camera=camera,
+                robot_id="r0",
+                format="png",
+                data={
+                    "image_b64": base64.b64encode(raw).decode("ascii"),
+                    "encoding": "png",
+                    "rendered": True,
+                },
+            )
+
+    store = InMemoryArtifactStore()
+    ctx = ToolContext(trace_id="t", robot_id="r0", artifact_store=store)
+    tool = CaptureFrameTool({"r0": _ImgAdapter()}, {"r0": ["overhead"]})
+
+    res = await tool.invoke({"robot_id": "r0", "camera": "overhead"}, ctx)
+    assert res.success
+    # raw image is gone from the result; a small ref took its place
+    assert "image_b64" not in res.output
+    ref = res.output["frame"]
+    assert ref["media_type"] == "image/png"
+    # the bytes are retrievable from the store
+    got = await store.get(ref["artifact_id"])
+    assert got is not None
+    assert got[0] == raw
 
 
 @pytest.mark.asyncio

@@ -10,6 +10,7 @@ from robot_harness.embodiment.base import EmbodimentAdapter, Frame
 from robot_harness.memory.base import Memory
 from robot_harness.safety.envelope import SafetyEnvelope
 from robot_harness.skill.registry import SkillRegistry
+from robot_harness.tools.artifacts import ArtifactStore, InMemoryArtifactStore
 from robot_harness.tools.base import BrainProfile, ToolRegistry
 from robot_harness.tools.cognitive.base import CognitiveScaffoldStore
 from robot_harness.tools.cognitive.plan_tool import PlannerStore, PlanTool
@@ -34,6 +35,8 @@ class HarnessContext:
     skill_registry: SkillRegistry
     safety_envelope: SafetyEnvelope
     memory: Memory
+    # Session-scoped out-of-band store for large tool I/O (images, depth, masks).
+    artifact_store: ArtifactStore = field(default_factory=InMemoryArtifactStore)
     session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     # robot_id → list of cognitive stores (plan, reflection, …)
     scaffold_stores: dict[str, list[CognitiveScaffoldStore]] = field(default_factory=dict)
@@ -109,6 +112,7 @@ class HarnessContext:
         from robot_harness.config.loader import load_config
         from robot_harness.embodiment.factory import build_catalog
         from robot_harness.tools.memory.backend import build_memory
+        from robot_harness.tools.memory.query_tool import MemoryQueryTool
 
         cfg = config or load_config()
         tool_registry = ToolRegistry()
@@ -118,11 +122,17 @@ class HarnessContext:
         catalog = build_catalog(cfg)
         adapters = {rid: catalog.get(rid) for rid in catalog.list_robot_ids()}
 
+        mem = memory or build_memory(cfg.memory, fleet_size=cfg.fleet_size)
+        # Long-term recall is an on-demand tool the Brain calls when it needs facts
+        # not in recent (working-memory) context — not an every-turn auto-query
+        # bypassing the registry (ADR-024 / memory-architecture invariant 4).
+        tool_registry.register(MemoryQueryTool(mem))
+
         return cls(
             config=cfg,
             tool_registry=tool_registry,
             skill_registry=skill_registry,
             safety_envelope=safety_envelope,
-            memory=memory or build_memory(cfg.memory, fleet_size=cfg.fleet_size),
+            memory=mem,
             embodiment_adapters=adapters,
         )

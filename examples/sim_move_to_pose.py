@@ -25,14 +25,7 @@ import uuid
 
 import httpx
 
-from robot_harness.brain.base import (
-    BrainDecision,
-    CriticSignal,
-    ExecutionHistory,
-    MemoryView,
-    Task,
-    ToolCallRequest,
-)
+from robot_harness.brain.base import BrainDecision, Task, ToolCallRequest
 from robot_harness.config.schema import EmbodimentBackendConfig, HarnessConfig
 from robot_harness.runtime.agent_loop import AgentLoop
 from robot_harness.runtime.harness_context import HarnessContext
@@ -67,13 +60,10 @@ class ScriptedBrain:
     def supports_streaming(self) -> bool:
         return False
 
-    async def decide(self, task: Task, memory_view: MemoryView, tools: list) -> BrainDecision:  # type: ignore[type-arg]
+    async def decide(self, messages: list, tools: list, **_: object) -> BrainDecision:  # type: ignore[type-arg]
         d = self._decisions[min(self._i, len(self._decisions) - 1)]
         self._i += 1
         return d
-
-    async def replan(self, history: ExecutionHistory, critic_signal: CriticSignal) -> BrainDecision:
-        return BrainDecision(decision_type="plan", message="recovered")
 
 
 async def main() -> None:

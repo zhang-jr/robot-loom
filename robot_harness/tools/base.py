@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from robot_harness.embodiment.base import EmbodimentCommand
+    from robot_harness.tools.artifacts import ArtifactStore
 
     SafetyCommandBuilder = Callable[[dict[str, Any], "ToolContext"], "EmbodimentCommand | None"]
 
@@ -37,6 +38,10 @@ class ToolContext:
     subtask_id: str = ""
     lease_id: str = ""
     timeout_s: float = 30.0
+    # Out-of-band store for large tool I/O (images, depth). Producing tools put
+    # bytes and return an ArtifactRef; the resolver middleware hydrates refs from
+    # here before dispatch. None when no store is wired (refs are then disabled).
+    artifact_store: ArtifactStore | None = None
     _cancel_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
 
     def cancel(self) -> None:

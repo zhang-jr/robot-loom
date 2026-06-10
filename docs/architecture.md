@@ -148,9 +148,9 @@ grasp 微调、力控反射）完全跑在本体 agent_server 内部，harness �
    │
    ▼ ReplanPolicy 决策（本体 verdict + critic verdict + sensor 联合）
    │   ├─ 双 verdict 一致 → 接受
-   │   ├─ 冲突           → CriticDisagreementError → Brain.replan()
+   │   ├─ 冲突           → CriticDisagreementError → 追加 critic-feedback 消息重规划
    │   ├─ completion     → 任务完成，写 EpisodicMemory
-   │   ├─ failure        → Brain.replan()
+   │   ├─ failure        → 追加 critic-feedback 消息，下一 turn 重规划（ADR-025）
    │   └─ unchanged      → 超时计数，触发降级
    │
    ▼ trace 写入 OTel，全链路可观测（含 cognitive_scaffold_trail）
@@ -213,10 +213,12 @@ class Skill(Protocol):
     async def execute(self, subtask, tools: ToolRegistry, ctx) -> SkillResult: ...
     async def rollback(self, ctx) -> None: ...
 
-# Brain：LLM 决策层
+# Brain：LLM 决策层（原生 tool-use 对话由 AgentLoop 拥有并增长，ADR-025；
+# replan = loop 往同一对话追加 critic-feedback 消息，无独立入口）
 class Brain(Protocol):
-    async def decide(self, task, memory_view, tools) -> BrainDecision: ...
-    async def replan(self, history, critic_signal) -> BrainDecision: ...
+    async def decide(
+        self, messages, tools, *, trace_id="", robot_id=""
+    ) -> BrainDecision: ...
 
 # SafetyEnvelope：前置校验
 class SafetyEnvelope(Protocol):

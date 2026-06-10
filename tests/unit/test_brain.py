@@ -2,18 +2,12 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from robot_harness.brain.base import (
-    BrainDecision,
-    CriticSignal,
-    ExecutionHistory,
-    MemoryView,
-    Task,
-    ToolCallRequest,
-)
+from robot_harness.brain.base import BrainDecision, Task, ToolCallRequest
 from robot_harness.brain.litellm_brain import LiteLLMBrain
 from robot_harness.config.schema import BrainConfig
 from robot_harness.errors import BrainOutputInvalidError
@@ -48,14 +42,18 @@ def _text_response(text: str) -> MagicMock:
     return response
 
 
+def _messages() -> list[dict[str, Any]]:
+    """A minimal native conversation — the AgentLoop owns this list (ADR-025)."""
+    return [
+        {"role": "system", "content": "You are a robot task planner."},
+        {"role": "user", "content": "Task: pick the red cup"},
+    ]
+
+
 def _make_task(description: str = "pick the red cup") -> Task:
     import uuid
 
-    return Task(
-        task_id=str(uuid.uuid4()),
-        description=description,
-        robot_id="robot-0",
-    )
+    return Task(task_id=str(uuid.uuid4()), description=description, robot_id="robot-0")
 
 
 # ---------------------------------------------------------------------------
@@ -78,28 +76,10 @@ def test_brain_decision_give_up_model() -> None:
     assert "Cannot" in d.message
 
 
-def test_critic_signal_model() -> None:
-    cs = CriticSignal(state="failure", confidence=0.8, evidence="object not moved")
-    assert cs.state == "failure"
-    assert cs.confidence == pytest.approx(0.8)
-
-
 def test_task_model() -> None:
     t = _make_task()
     assert t.robot_id == "robot-0"
     assert t.description == "pick the red cup"
-
-
-def test_memory_view_defaults() -> None:
-    mv = MemoryView()
-    assert mv.episodic_hits == []
-    assert mv.object_hits == []
-
-
-def test_execution_history_defaults() -> None:
-    h = ExecutionHistory()
-    assert h.turns == []
-    assert h.last_critic_signal == ""
 
 
 # ---------------------------------------------------------------------------
@@ -113,11 +93,27 @@ async def test_brain_decide_returns_tool_call() -> None:
     fake = _tool_call_response(["perception.detect_objects"])
 
     with patch("litellm.acompletion", new=AsyncMock(return_value=fake)):
-        decision = await brain.decide(_make_task(), MemoryView(), [])
+        decision = await brain.decide(_messages(), [])
 
     assert decision.decision_type == "tool_call"
     assert len(decision.tool_calls) == 1
     assert decision.tool_calls[0].tool_name == "perception.detect_objects"
+
+
+@pytest.mark.asyncio
+async def test_brain_decide_sets_assistant_message_with_tool_calls() -> None:
+    """The assistant turn is returned verbatim so the loop can append it to history
+    before the tool results (native protocol, ADR-025)."""
+    brain = LiteLLMBrain(BrainConfig(model="openai/gpt-4o"))
+    fake = _tool_call_response(["perception.detect_objects"])
+
+    with patch("litellm.acompletion", new=AsyncMock(return_value=fake)):
+        decision = await brain.decide(_messages(), [])
+
+    msg = decision.assistant_message
+    assert msg is not None and msg["role"] == "assistant"
+    assert msg["tool_calls"][0]["id"] == "call_0"
+    assert msg["tool_calls"][0]["function"]["name"] == "perception.detect_objects"
 
 
 @pytest.mark.asyncio
@@ -126,7 +122,7 @@ async def test_brain_decide_multiple_tool_calls() -> None:
     fake = _tool_call_response(["perception.detect_objects", "perception.estimate_depth"])
 
     with patch("litellm.acompletion", new=AsyncMock(return_value=fake)):
-        decision = await brain.decide(_make_task(), MemoryView(), [])
+        decision = await brain.decide(_messages(), [])
 
     assert decision.decision_type == "tool_call"
     assert len(decision.tool_calls) == 2
@@ -143,7 +139,7 @@ async def test_brain_decide_returns_plan_on_text_response() -> None:
     fake = _text_response("Step 1: perceive. Step 2: grasp.")
 
     with patch("litellm.acompletion", new=AsyncMock(return_value=fake)):
-        decision = await brain.decide(_make_task(), MemoryView(), [])
+        decision = await brain.decide(_messages(), [])
 
     assert decision.decision_type == "plan"
     assert "Step 1" in decision.plan
@@ -155,27 +151,9 @@ async def test_brain_decide_give_up_on_negative_text() -> None:
     fake = _text_response("I cannot complete this task — the object is not found.")
 
     with patch("litellm.acompletion", new=AsyncMock(return_value=fake)):
-        decision = await brain.decide(_make_task(), MemoryView(), [])
+        decision = await brain.decide(_messages(), [])
 
     assert decision.decision_type == "give_up"
-
-
-# ---------------------------------------------------------------------------
-# Tests: LiteLLMBrain — replan path
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_brain_replan_with_critic_signal() -> None:
-    brain = LiteLLMBrain(BrainConfig(model="openai/gpt-4o"))
-    fake = _tool_call_response(["perception.detect_objects"])
-    critic = CriticSignal(state="failure", confidence=0.7, evidence="object fell")
-    history = ExecutionHistory(turns=[{"turn": 1, "result": "failed"}])
-
-    with patch("litellm.acompletion", new=AsyncMock(return_value=fake)):
-        decision = await brain.replan(history, critic)
-
-    assert decision.decision_type in ("tool_call", "plan", "give_up")
 
 
 # ---------------------------------------------------------------------------
@@ -190,17 +168,33 @@ async def test_brain_decide_raises_on_backend_exception() -> None:
 
     with patch("litellm.acompletion", new=AsyncMock(side_effect=RuntimeError("network error"))):
         with pytest.raises(BrainOutputInvalidError, match="network error"):
-            await brain.decide(_make_task(), MemoryView(), [])
+            await brain.decide(_messages(), [])
 
 
 @pytest.mark.asyncio
-async def test_brain_replan_raises_on_backend_exception() -> None:
+async def test_brain_errors_carry_trace_context() -> None:
+    """Caller-provided trace_id/robot_id tag Brain exceptions, keeping the Brain
+    layer on the same trace as the task's tool/critic/memory spans (ADR-008)."""
     brain = LiteLLMBrain(BrainConfig(model="openai/gpt-4o"))
-    critic = CriticSignal(state="failure", confidence=0.5, evidence="stalled")
 
-    with patch("litellm.acompletion", new=AsyncMock(side_effect=RuntimeError("timeout"))):
-        with pytest.raises(BrainOutputInvalidError):
-            await brain.replan(ExecutionHistory(), critic)
+    with patch("litellm.acompletion", new=AsyncMock(side_effect=RuntimeError("boom"))):
+        with pytest.raises(BrainOutputInvalidError) as excinfo:
+            await brain.decide(_messages(), [], trace_id="trace-42", robot_id="r0")
+
+    assert excinfo.value.trace_id == "trace-42"
+    assert excinfo.value.robot_id == "r0"
+
+
+@pytest.mark.asyncio
+async def test_brain_decision_uses_caller_trace_id() -> None:
+    """decide() must not mint its own trace_id when the loop provides one."""
+    brain = LiteLLMBrain(BrainConfig(model="openai/gpt-4o"))
+    fake = _text_response("Step 1: perceive.")
+
+    with patch("litellm.acompletion", new=AsyncMock(return_value=fake)):
+        decision = await brain.decide(_messages(), [], trace_id="trace-42", robot_id="r0")
+
+    assert decision.trace_id == "trace-42"
 
 
 # ---------------------------------------------------------------------------
