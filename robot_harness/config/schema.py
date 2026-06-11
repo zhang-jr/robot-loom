@@ -75,6 +75,24 @@ class MemoryConfig(BaseModel):
     request_timeout_s: float = 10.0
 
 
+class ToolServersConfig(BaseModel):
+    """Endpoints of external capability servers the harness holds clients for.
+
+    Per ADR-022 the harness is only entitled to know the URLs of
+    perception(grounding) / memory / critic / per-robot agent_server backends.
+    Memory lives under ``memory.server_url`` and agent_server / sim under
+    ``embodiments.*.server_url``, so this section carries the rest.
+
+    - ``perception`` — MCP URL of a perception server publishing the
+      ``perception.*`` tool set (detect / depth / ground / segment). Empty
+      means no perception tools are registered. A ``critic`` field will be
+      added once a URL-consuming critic client exists (ADR-026); grasp / VLA
+      URLs never belong here — they are agent_server internals (ADR-022).
+    """
+
+    perception: str = ""
+
+
 class ObservabilityConfig(BaseModel):
     trace_sink: Literal["stderr", "file"] = "stderr"
     trace_file: str = ""
@@ -127,6 +145,7 @@ class HarnessConfig(BaseModel):
     tool: ToolConfig = Field(default_factory=ToolConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    tool_servers: ToolServersConfig = Field(default_factory=ToolServersConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     fleet_size: int = 1
     robot_ids: list[str] = Field(default_factory=lambda: ["robot-0"])
