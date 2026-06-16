@@ -129,6 +129,8 @@ class _Sim:
         self._dof = dof
         self._mjcf = _DEFAULT_MJCF
         self._renderer = None
+        self._cube_position = [0.35, 0.0, 0.02]
+        self._held_object_id: str | None = None
         if _HAS_MUJOCO:
             self._build_mujoco()
         else:
@@ -159,6 +161,7 @@ class _Sim:
             self._qvel = [0.0] * self._dof
             self._time = 0.0
         self._gripper = 0.0
+        self._held_object_id = None
 
     def apply(self, command_type: str, values: list[float], gripper_close: bool) -> None:
         if command_type == "hand_grasp":
@@ -188,6 +191,7 @@ class _Sim:
             "joint_velocities": qvel,
             "end_effector_pose": {},
             "gripper_state": self._gripper,
+            "held_object_id": self._held_object_id,
         }
 
     def sim_time(self) -> float:
@@ -224,6 +228,55 @@ class _Sim:
             height=_RENDER_H,
             channels=3,
         ).model_dump()
+
+    def run_verb(self, verb: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if verb == "reactive_grasp":
+            return self._reactive_grasp(payload)
+        raise KeyError(verb)
+
+    def _reactive_grasp(self, payload: dict[str, Any]) -> dict[str, Any]:
+        target_hint = payload.get("target_hint") or {}
+        kind = target_hint.get("kind")
+        graspable = False
+
+        if kind == "object_id" and target_hint.get("object_id") == "cube":
+            graspable = True
+        elif kind == "phrase" and "cube" in str(target_hint.get("phrase", "")).lower():
+            graspable = True
+
+        if not graspable:
+            return {
+                "outcome": "failed",
+                "evidence": f"reactive_grasp could not resolve target_hint={target_hint!r}",
+                "robot_state_snapshot": {
+                    **self.state(),
+                    "object_position": list(self._cube_position),
+                },
+                "duration_s": 0.4,
+                "aborted_by": "none",
+            }
+
+        self._gripper = 1.0
+        self._held_object_id = "cube"
+        if _HAS_MUJOCO:
+            for _ in range(50):
+                mujoco.mj_step(self._model, self._data)
+        else:
+            self._time += 0.1
+
+        final_grasp_pose = [self._cube_position[0], self._cube_position[1], 0.18, 0.0, 0.0, 0.0]
+        return {
+            "outcome": "success",
+            "evidence": "reactive_grasp closed the gripper around the cube and lifted it.",
+            "robot_state_snapshot": {
+                **self.state(),
+                "object_position": [self._cube_position[0], self._cube_position[1], 0.18],
+            },
+            "duration_s": 1.2,
+            "aborted_by": "none",
+            "grasped_object_id": "cube",
+            "final_grasp_pose": final_grasp_pose,
+        }
 
 
 def build_app(robot_id: str) -> Any:
@@ -274,6 +327,16 @@ def build_app(robot_id: str) -> Any:
     async def reset() -> dict[str, Any]:
         sim.reset()
         return sim.state()
+
+    @app.post("/verb/{verb}")
+    async def verb(verb: str, request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        try:
+            return sim.run_verb(verb, payload)
+        except KeyError:
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=404, detail=f"unknown verb: {verb}") from None
 
     @app.post("/scene")
     async def scene(request: Request) -> dict[str, Any]:
