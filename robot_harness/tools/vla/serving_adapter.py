@@ -1,4 +1,4 @@
-"""VlaServingTool — mock adapter for an external VLA serving runtime."""
+"""Mock VLA serving adapter."""
 
 from __future__ import annotations
 
@@ -10,15 +10,13 @@ from robot_harness.tools.schema import ToolBackend, ToolSchema
 
 
 class VlaServingTool:
-    """Mock VLA (Vision-Language-Action) inference tool.
-
-    Phase 1: returns a synthetic joint-space action without contacting any server.
-    Phase 2: will POST observation + instruction to an external VLA serving runtime
-             (e.g. OpenVLA, RoboFlamingo, π0) over HTTP/WebSocket.
-    """
+    """Mock VLA inference tool used for debug and simulator overrides."""
 
     name = "vla.infer_action"
     backend: ToolBackend = "native"
+    # Single-step inference belongs inside an on-robot rollout verb. Keep this
+    # tool registered for explicit debug/sim calls, but out of Brain planning.
+    brain_visible = False
     schema = ToolSchema(
         name="vla.infer_action",
         description=(

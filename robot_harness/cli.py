@@ -49,6 +49,7 @@ def _cmd_init(args: argparse.Namespace) -> None:
 def _cmd_tool_list(args: argparse.Namespace) -> None:
     ctx = _build_ctx()
     _register_generic_tools(ctx)
+    _register_action_tools(ctx)
     schemas = ctx.tool_registry.list_schemas()
     if not schemas:
         print("No tools registered.")  # noqa: T201
@@ -92,6 +93,7 @@ async def _async_run(args: argparse.Namespace) -> None:
 
     ctx = _build_ctx()
     _register_generic_tools(ctx)
+    _register_action_tools(ctx)
 
     brain = LiteLLMBrain(ctx.config.brain)
     loop = AgentLoop(brain, ctx, max_turns=args.max_turns)
@@ -121,6 +123,13 @@ def _register_generic_tools(ctx: HarnessContext) -> None:
     ctx.tool_registry.register(ShellTool())
     ctx.tool_registry.register(ReadFileTool())
     ctx.tool_registry.register(WriteFileTool())
+
+
+def _register_action_tools(ctx: HarnessContext) -> None:
+    """Register action-model mock/override tools."""
+    from robot_harness.tools.vla import VlaServingTool
+
+    ctx.tool_registry.register(VlaServingTool())
 
 
 def main() -> None:

@@ -8,12 +8,8 @@ from robot_harness.errors import ToolBackendUnreachableError
 from robot_harness.tools.mcp.client import MCPClientSession, MCPTool
 
 NAVIGATION_PLAN_PATH = "navigation.plan_path"
-NAVIGATION_EXECUTE_STEP = "navigation.execute_step"
 
-NAVIGATION_TOOL_NAMES: tuple[str, ...] = (
-    NAVIGATION_PLAN_PATH,
-    NAVIGATION_EXECUTE_STEP,
-)
+NAVIGATION_TOOL_NAMES: tuple[str, ...] = (NAVIGATION_PLAN_PATH,)
 
 _XY_SCHEMA: dict[str, Any] = {
     "type": "array",
@@ -102,37 +98,6 @@ _PLAN_PATH_OUTPUT: dict[str, Any] = {
     "required": ["waypoints", "duration_est_s", "plan_id"],
 }
 
-_VELOCITY_COMMAND_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "linear_velocity_mps": {"type": "number"},
-        "angular_velocity_rps": {"type": "number"},
-    },
-    "required": ["linear_velocity_mps", "angular_velocity_rps"],
-}
-
-_EXECUTE_STEP_INPUT: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "plan_id": {"type": "string"},
-        "current_xy": _XY_SCHEMA,
-        "current_yaw": {"type": "number", "description": "Current yaw in radians."},
-    },
-    "required": ["plan_id", "current_xy", "current_yaw"],
-}
-
-_EXECUTE_STEP_OUTPUT: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "command": _VELOCITY_COMMAND_SCHEMA,
-        "next_waypoint_idx": {"type": "integer", "minimum": 0},
-        "progress_pct": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-        "is_finished": {"type": "boolean"},
-    },
-    "required": ["command", "next_waypoint_idx", "progress_pct", "is_finished"],
-}
-
-
 def build_navigation_tools(server_url: str) -> list[MCPTool]:
     """Construct navigation MCP tools pointed at ``server_url``."""
     return [
@@ -146,18 +111,7 @@ def build_navigation_tools(server_url: str) -> list[MCPTool]:
             output_schema=_PLAN_PATH_OUTPUT,
             server_url=server_url,
             is_idempotent=True,
-        ),
-        MCPTool(
-            tool_name=NAVIGATION_EXECUTE_STEP,
-            description=(
-                "Execute one closed-loop navigation controller step for an existing plan "
-                "and return a velocity command."
-            ),
-            input_schema=_EXECUTE_STEP_INPUT,
-            output_schema=_EXECUTE_STEP_OUTPUT,
-            server_url=server_url,
-            is_idempotent=False,
-        ),
+        )
     ]
 
 

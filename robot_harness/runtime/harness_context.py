@@ -86,9 +86,12 @@ class HarnessContext:
         memory: Memory | None = None,
     ) -> HarnessContext:
         """Convenience factory — wires up default implementations."""
-        from robot_harness.config.loader import load_config
+        if config is None:
+            from robot_harness.config.loader import load_config
 
-        cfg = config or load_config()
+            cfg = load_config()
+        else:
+            cfg = config
         tool_registry = ToolRegistry()
         skill_registry = SkillRegistry()
         safety_envelope = SafetyEnvelope(cfg.safety)

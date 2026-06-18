@@ -29,9 +29,10 @@ from urllib.parse import urlsplit
 
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.exceptions import McpError
 from mcp.types import CallToolResult, ListToolsResult
+import httpx
 
 from robot_harness.errors import (
     ToolBackendUnreachableError,
@@ -115,8 +116,17 @@ class MCPClientSession:
         """
         scheme = urlsplit(self._server_url).scheme.lower()
         if scheme in ("http", "https"):
+            http_client = httpx.AsyncClient(
+                timeout=httpx.Timeout(self._init_timeout_s, read=300.0),
+                trust_env=False,
+            )
+            await stack.enter_async_context(http_client)
             read, write, _get_session_id = await stack.enter_async_context(
-                streamablehttp_client(self._server_url, timeout=self._init_timeout_s)
+                streamable_http_client(
+                    self._server_url,
+                    http_client=http_client,
+                    terminate_on_close=False,
+                )
             )
             return read, write
         if scheme == "stdio":

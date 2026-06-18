@@ -218,7 +218,7 @@ async def test_vla_serving_mock() -> None:
     assert result.success
     actions = (result.output or {}).get("actions", [])
     assert len(actions) == 1
-    assert len(actions[0]) == 6
+    assert len(actions[0]) == 7
 
 
 @pytest.mark.asyncio

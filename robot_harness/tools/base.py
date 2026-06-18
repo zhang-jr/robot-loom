@@ -156,7 +156,11 @@ class ToolRegistry:
 
     def export_for_brain(self, profile: BrainProfile) -> list[BrainToolSpec]:
         """Export tool specs in the format expected by the Brain backend."""
-        schemas = self.list_schemas()
+        schemas = [
+            tool.schema
+            for tool in self._tools.values()
+            if getattr(tool, "brain_visible", True)
+        ]
         if profile.name in ("openai", "litellm"):
             return [s.to_openai_function() for s in schemas]
         if profile.name == "mcp":
