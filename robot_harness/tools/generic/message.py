@@ -1,6 +1,10 @@
-"""SendMessageTool — generic log/notification tool (NativeTool).
+"""SendMessageTool — the Brain's fire-and-forget "report" to the user (ADR-023).
 
-Currently writes to the structured tracer.
+This is the report half of Talk: it delivers a one-way notification through the
+Channel layer via the session-bound ``ctx.outbound`` handle. The tool stays
+channel-agnostic — it never names Telegram vs CLI; routing is resolved upstream.
+When no channel is wired (programmatic callers), ``ctx.outbound`` is None and the
+message degrades to a tracer event so it remains observable.
 """
 
 from __future__ import annotations
@@ -13,10 +17,6 @@ from robot_harness.tools.base import ToolContext, ToolResult
 from robot_harness.tools.schema import ToolBackend, ToolSchema
 
 
-# TODO (ADR-023): deliver via the Channel layer (inject a ChannelManager.send
-# sink) instead of only tracing. Stays channel-agnostic — target defaults to the
-# originating session's (channel, user_id). This is the fire-and-forget "report"
-# half of Talk; the round-trip "ask_user" half goes through BrainDecision.ask_user.
 class SendMessageTool:
     """Send a notification message to the operator channel."""
 
@@ -53,20 +53,28 @@ class SendMessageTool:
 
     async def invoke(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         t0 = time.monotonic()
+        text = args.get("text", "")
+        level = args.get("level", "info")
         tracer.event(
             "message.sent",
             trace_id=ctx.trace_id,
             robot_id=ctx.robot_id,
-            level=args.get("level", "info"),
-            text=args.get("text", ""),
+            level=level,
+            text=text,
             channel=args.get("channel", "default"),
         )
+        # Deliver through the session-bound channel when one is wired; otherwise the
+        # tracer event above is the only record (programmatic / example callers).
+        delivered = False
+        if ctx.outbound is not None:
+            await ctx.outbound.report(text, level)
+            delivered = True
         latency = (time.monotonic() - t0) * 1000
         return ToolResult(
             tool_name=self.name,
             trace_id=ctx.trace_id,
             success=True,
-            output={"delivered": True},
+            output={"delivered": delivered},
             latency_ms=latency,
         )
 

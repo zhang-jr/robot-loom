@@ -113,6 +113,7 @@ class HarnessContext:
         from robot_harness.embodiment.factory import build_catalog
         from robot_harness.tools.memory.backend import build_memory
         from robot_harness.tools.memory.query_tool import MemoryQueryTool
+        from robot_harness.tools.perception.mcp_bundle import register_perception_tools
 
         cfg = config or load_config()
         tool_registry = ToolRegistry()
@@ -121,6 +122,12 @@ class HarnessContext:
 
         catalog = build_catalog(cfg)
         adapters = {rid: catalog.get(rid) for rid in catalog.list_robot_ids()}
+
+        # External capability servers (ADR-026): a non-empty URL in
+        # config.tool_servers wires the corresponding tool bundle, so pointing
+        # the harness at another deployment is a workspace-config-only change.
+        if cfg.tool_servers.perception:
+            register_perception_tools(tool_registry, cfg.tool_servers.perception)
 
         mem = memory or build_memory(cfg.memory, fleet_size=cfg.fleet_size)
         # Long-term recall is an on-demand tool the Brain calls when it needs facts

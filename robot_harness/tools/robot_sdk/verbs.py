@@ -42,26 +42,14 @@ Compare and contrast (do not confuse):
 from __future__ import annotations
 
 import time
-from typing import Any, ClassVar, Literal, Protocol, runtime_checkable
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from robot_harness.embodiment.base import EmbodimentCommand
+from robot_harness.embodiment.base import EmbodimentCommand, SupportsVerbs
 from robot_harness.errors import ToolCancelledError
 from robot_harness.tools.base import ToolContext, ToolResult
 from robot_harness.tools.schema import ToolBackend, ToolSchema
-
-
-@runtime_checkable
-class SupportsVerbs(Protocol):
-    """An agent_server adapter that can run on-robot verbs (ADR-019).
-
-    A sim agent_server (``SimEmbodimentAdapter``) implements this; a mock robot
-    adapter does not, so verb tools fall back to their simulated verdict.
-    """
-
-    async def call_verb(self, verb: str, payload: dict[str, Any]) -> dict[str, Any]: ...
-
 
 # ---------------------------------------------------------------------------
 # Tool name constants — import these instead of inlining literals

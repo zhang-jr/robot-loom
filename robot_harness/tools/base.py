@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
     from robot_harness.embodiment.base import EmbodimentCommand
     from robot_harness.tools.artifacts import ArtifactStore
+    from robot_harness.tools.outbound import OutboundHandle
 
     SafetyCommandBuilder = Callable[[dict[str, Any], "ToolContext"], "EmbodimentCommand | None"]
 
@@ -42,6 +43,10 @@ class ToolContext:
     # bytes and return an ArtifactRef; the resolver middleware hydrates refs from
     # here before dispatch. None when no store is wired (refs are then disabled).
     artifact_store: ArtifactStore | None = None
+    # Session-bound path back to the user (ADR-023). Set by the AgentLoop from the
+    # originating channel; None for programmatic callers. The send_message tool
+    # delivers through it instead of only tracing.
+    outbound: OutboundHandle | None = None
     _cancel_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
 
     def cancel(self) -> None:

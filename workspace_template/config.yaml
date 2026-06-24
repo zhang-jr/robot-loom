@@ -69,6 +69,23 @@ memory:
   request_timeout_s: 10.0
 
 # ---------------------------------------------------------------------------
+# External capability servers.
+#
+# Endpoints of independently deployed capability servers the harness connects
+# to as a client. Server URLs are deployment topology, not secrets — they
+# belong here (trackable in git), while API keys belong in `.env`.
+#
+#   perception — MCP URL of a perception server publishing the perception.*
+#                tool set (detect / depth / ground / segment). Leave empty to
+#                run without perception tools.
+#
+# Memory and per-robot agent_server / sim endpoints have their own sections
+# (`memory.server_url`, `embodiments.<robot_id>.server_url`).
+# ---------------------------------------------------------------------------
+tool_servers:
+  perception: ""                # e.g. http://localhost:7100/mcp
+
+# ---------------------------------------------------------------------------
 # Observability.
 # ---------------------------------------------------------------------------
 observability:

@@ -30,6 +30,16 @@ class EmbodimentCatalog:
                 robot_id=robot_id,
             ) from None
 
+    async def aclose(self) -> None:
+        """Close every adapter that holds transport resources (e.g. an HTTP pool).
+
+        Adapters without an ``aclose`` (pure in-process backends) are skipped.
+        """
+        for adapter in self._adapters.values():
+            aclose = getattr(adapter, "aclose", None)
+            if aclose is not None:
+                await aclose()
+
     def list_robot_ids(self) -> list[str]:
         return list(self._adapters.keys())
 

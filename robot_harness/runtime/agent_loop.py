@@ -31,6 +31,7 @@ from robot_harness.critic.replan_policy import ReplanPolicy, SensorHeuristic
 from robot_harness.embodiment.base import Frame
 from robot_harness.errors import (
     BrainOutputInvalidError,
+    ChannelError,
     CriticDisagreementError,
     CriticServiceDown,
     ReplanLoopExceededError,
@@ -41,6 +42,7 @@ from robot_harness.memory.base import MemoryEntry
 from robot_harness.observability.tracer import tracer
 from robot_harness.runtime.harness_context import HarnessContext
 from robot_harness.tools.base import BrainProfile, ToolContext, ToolResult
+from robot_harness.tools.outbound import NullOutbound, OutboundHandle
 
 _SYSTEM_PROMPT = """\
 You are a robot task planner. You have access to tools that control robot hardware.
@@ -77,6 +79,8 @@ class AgentLoop:
         critic:          Optional progress-evaluation Critic (ADR-010).
         critic_interval: Run the Critic every N turns (default: every 3 turns).
         max_replan:      Max critic-driven replans per task before aborting.
+        max_ask_user:    Max ask_user round-trips per task before giving up.
+        ask_timeout_s:   How long to wait for a user reply to an ask_user.
     """
 
     def __init__(
@@ -87,6 +91,8 @@ class AgentLoop:
         critic: Critic | None = None,
         critic_interval: int = 3,
         max_replan: int = 5,
+        max_ask_user: int = 5,
+        ask_timeout_s: float = 300.0,
     ) -> None:
         self._brain = brain
         self._ctx = ctx
@@ -94,9 +100,17 @@ class AgentLoop:
         self._critic = critic
         self._critic_interval = critic_interval
         self._max_replan = max_replan
+        self._max_ask_user = max_ask_user
+        self._ask_timeout_s = ask_timeout_s
 
-    async def run(self, task: Task) -> AgentResult:
-        """Execute *task* until completion, give_up, or max_turns exceeded."""
+    async def run(self, task: Task, *, outbound: OutboundHandle | None = None) -> AgentResult:
+        """Execute *task* until completion, give_up, or max_turns exceeded.
+
+        ``outbound`` is the session-bound path back to the user (ADR-023): the
+        Talk tools deliver through it and ask_user round-trips on it. When None
+        (programmatic callers), it degrades to :class:`NullOutbound`.
+        """
+        outbound = outbound or NullOutbound()
         trace_id = str(uuid.uuid4())
         tracer.event(
             "agent_loop.start",
@@ -111,6 +125,7 @@ class AgentLoop:
         # The loop owns the conversation (ADR-025); it grows across turns.
         messages = self._initial_messages(task)
         replan_count = 0
+        ask_count = 0
         sensor = SensorHeuristic()
         replan_policy = ReplanPolicy()
         active_critic = self._critic
@@ -164,7 +179,9 @@ class AgentLoop:
                 return result
 
             if decision.decision_type == "tool_call":
-                turn_results = await self._execute_tool_calls(decision.tool_calls, task, trace_id)
+                turn_results = await self._execute_tool_calls(
+                    decision.tool_calls, task, trace_id, outbound
+                )
                 all_tool_results.extend(turn_results)
                 # Each result becomes a native role:tool message keyed by tool_call_id;
                 # blobs are stripped so the raw image never enters the LLM (the small
@@ -263,17 +280,37 @@ class AgentLoop:
                     trace_id=trace_id,
                     message=decision.message,
                 )
-                result = AgentResult(
-                    task_id=task.task_id,
-                    robot_id=task.robot_id,
-                    outcome="failure",
-                    message=f"Brain requires user input: {decision.message}",
-                    turns=turn,
-                    tool_results=all_tool_results,
-                    trace_id=trace_id,
+                ask_count += 1
+                incomplete = self._ask_user_incomplete(
+                    task, decision.message, turn, all_tool_results, trace_id
                 )
-                await self._write_episode(task, result, trace_id)
-                return result
+                if ask_count > self._max_ask_user:
+                    result = AgentResult(
+                        task_id=task.task_id,
+                        robot_id=task.robot_id,
+                        outcome="give_up",
+                        message="Exceeded ask_user limit without resolution",
+                        turns=turn,
+                        tool_results=all_tool_results,
+                        trace_id=trace_id,
+                    )
+                    await self._write_episode(task, result, trace_id)
+                    return result
+                try:
+                    reply = await outbound.ask(decision.message, timeout_s=self._ask_timeout_s)
+                except (TimeoutError, ChannelError) as exc:
+                    # No reply (timeout, no channel wired, or delivery failure):
+                    # exit cleanly as incomplete carrying the unanswered question.
+                    tracer.event(
+                        "agent_loop.ask_user_unanswered",
+                        trace_id=trace_id,
+                        reason=type(exc).__name__,
+                    )
+                    await self._write_episode(task, incomplete, trace_id)
+                    return incomplete
+                # Resume the same conversation (ADR-025): the reply is a user turn.
+                messages.append({"role": "user", "content": reply})
+                continue
 
         # Turn budget exhausted without a terminal decision. This is an EXPECTED
         # outcome — the agent kept acting/observing but never converged (a common
@@ -554,6 +591,25 @@ class AgentLoop:
                 error=str(exc),
             )
 
+    def _ask_user_incomplete(
+        self,
+        task: Task,
+        question: str,
+        turn: int,
+        tool_results: list[dict[str, Any]],
+        trace_id: str,
+    ) -> AgentResult:
+        """Build the ``incomplete`` result returned when an ask_user goes unanswered."""
+        return AgentResult(
+            task_id=task.task_id,
+            robot_id=task.robot_id,
+            outcome="incomplete",
+            message=f"Awaiting user input: {question}",
+            turns=turn,
+            tool_results=tool_results,
+            trace_id=trace_id,
+        )
+
     # ------------------------------------------------------------------
     # Tool dispatch
     # ------------------------------------------------------------------
@@ -563,6 +619,7 @@ class AgentLoop:
         requests: list[ToolCallRequest],
         task: Task,
         trace_id: str,
+        outbound: OutboundHandle,
     ) -> list[dict[str, Any]]:
         async def _run_one(req: ToolCallRequest) -> dict[str, Any]:
             tool_ctx = ToolContext(
@@ -571,6 +628,7 @@ class AgentLoop:
                 subtask_id=task.subtask_id,
                 timeout_s=self._ctx.config.tool.default_timeout_s,
                 artifact_store=self._ctx.artifact_store,
+                outbound=outbound,
             )
             result = await self._invoke_tool(req, tool_ctx)
             return result.model_dump()

@@ -214,6 +214,27 @@ class SafetyEnvelopeViolation(SafetyError):  # noqa: N818
 
 
 # ---------------------------------------------------------------------------
+# Channel  — user-facing IO transport (ADR-023)
+# ---------------------------------------------------------------------------
+
+
+class ChannelError(HarnessError):
+    """Channel / user-facing IO transport errors."""
+
+    def __init__(self, message: str, *, channel: str = "", **kw: str) -> None:
+        super().__init__(message, **kw)
+        self.channel = channel
+
+
+class ChannelUnavailable(ChannelError):  # noqa: N818
+    """The target channel is not registered or not reachable."""
+
+
+class ChannelDeliveryFailed(ChannelError):  # noqa: N818
+    """An outbound message could not be delivered through the channel."""
+
+
+# ---------------------------------------------------------------------------
 # Fleet
 # ---------------------------------------------------------------------------
 

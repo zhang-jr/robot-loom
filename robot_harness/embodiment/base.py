@@ -96,8 +96,9 @@ class EmbodimentCommand(BaseModel):
     """
 
     # TODO (ADR-009): add Pydantic validator for values length per command_type
-    #   when the second adapter type (humanoid / mobile) lands — currently only
-    #   generic_6dof exists so no layout conflicts arise yet.
+    #   once a non-arm robot_type is actually driven — today every backend goes
+    #   through RealAgentServerAdapter / SimEmbodimentAdapter with robot_type="arm"
+    #   default, so no per-morphology layout conflicts arise yet.
     # TODO (ADR-007): promote ``frame`` to an optional typed field when the safety
     #   layer needs coordinate-frame-aware validation for cartesian commands.
     # TODO (ADR-009): add ``locomotion_mode: Literal["pose", "twist"]`` when a
@@ -151,3 +152,26 @@ class EmbodimentAdapter(Protocol):
     async def get_state(self) -> RobotState: ...
     async def dispatch(self, cmd: EmbodimentCommand) -> DispatchHandle: ...
     async def safety_check(self, cmd: EmbodimentCommand) -> SafetyVerdict: ...
+
+
+@runtime_checkable
+class SupportsVerbs(Protocol):
+    """Optional capability: an agent_server adapter that can run on-robot verbs.
+
+    A *verb* (``reactive_grasp`` / ``visual_servo_to`` / ``move_to_pose`` / …) is
+    a mid-loop perception-action behaviour that runs ON the robot's agent_server;
+    the harness issues a high-level intent and awaits a single completion verdict
+    (see embodiment/base contract). ``call_verb`` is the pure transport primitive
+    for that — "POST /verb/{name}, return the raw verdict dict".
+
+    Deliberately kept OFF the core ``EmbodimentAdapter`` Protocol: verbs are
+    heterogeneous per robot (some bodies implement only a subset), so "can run
+    verbs" is an additive capability, not part of the contract every backend must
+    satisfy. Both real-hardware and simulator agent_server adapters implement it;
+    a pure mock backend does not, and verb tools fall back to a simulated verdict.
+
+    Owned by the embodiment layer so the dependency points downward:
+    ``tools/robot_sdk`` imports this to gate dispatch, not the other way around.
+    """
+
+    async def call_verb(self, verb: str, payload: dict[str, Any]) -> dict[str, Any]: ...
