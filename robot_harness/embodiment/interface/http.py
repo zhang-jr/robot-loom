@@ -19,9 +19,13 @@ class HttpAgentServerClient:
     """Thin client for a per-robot HTTP agent_server.
 
     The agent_server is an external process (not in this repo) that exposes:
-    - POST /dispatch  — send an EmbodimentCommand JSON payload
-    - GET  /state     — retrieve current RobotState
-    - GET  /camera/{id} — retrieve latest camera frame
+    - POST /dispatch       — send an EmbodimentCommand JSON payload
+    - GET  /state          — retrieve current RobotState
+    - GET  /camera/{id}    — retrieve latest camera frame
+    - POST /safety_check   — pre-dispatch advisory check
+    - POST /verb/{name}    — run an on-robot mid-loop verb, return a verdict
+    - POST /abort          — cancel the in-flight action / verb
+    - GET  /health         — liveness + available verbs
 
     Currently all methods return mock data without network calls.
     """
@@ -63,3 +67,26 @@ class HttpAgentServerClient:
     async def safety_check(self, cmd: dict[str, Any]) -> dict[str, Any]:
         # TODO (ADR-016): POST {base_url}/safety_check with cmd payload
         return {"passed": True, "reason": "mock", "violated_rules": []}
+
+    async def call_verb(self, verb: str, payload: dict[str, Any]) -> dict[str, Any]:
+        # TODO (ADR-016): POST {base_url}/verb/{verb} with the verb payload.
+        # Returns a CompletionVerdict-shaped dict; the robot_sdk verb tool validates it.
+        return {
+            "outcome": "success",
+            "evidence": f"mock {verb}",
+            "robot_state_snapshot": {"robot_id": self._robot_id},
+            "duration_s": 1.0,
+            "aborted_by": "none",
+        }
+
+    async def abort(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        # TODO (ADR-016): POST {base_url}/abort to stop the in-flight action/verb.
+        return {"aborted": True, "robot_id": self._robot_id}
+
+    async def health(self) -> dict[str, Any]:
+        # TODO (ADR-016): GET {base_url}/health
+        return {"status": "ok", "robot_id": self._robot_id, "available_verbs": []}
+
+    async def aclose(self) -> None:
+        # No connection pool while this is a stub; real client (ADR-016) closes here.
+        return None

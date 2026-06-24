@@ -10,9 +10,9 @@ changes (ADR-009 / ADR-021).
 from __future__ import annotations
 
 from robot_harness.config.schema import EmbodimentBackendConfig, HarnessConfig
-from robot_harness.embodiment.arm.generic_6dof import Generic6DofArm
 from robot_harness.embodiment.base import EmbodimentAdapter
 from robot_harness.embodiment.catalog import EmbodimentCatalog
+from robot_harness.embodiment.real.agent_server import RealAgentServerAdapter
 from robot_harness.embodiment.sim.isaac_adapter import IsaacLabSimRobot
 from robot_harness.embodiment.sim.mujoco_adapter import MujocoSimRobot
 from robot_harness.errors import HardwareNotReadyError
@@ -21,7 +21,12 @@ from robot_harness.errors import HardwareNotReadyError
 def build_embodiment(robot_id: str, cfg: EmbodimentBackendConfig) -> EmbodimentAdapter:
     """Construct a single EmbodimentAdapter for *robot_id* from *cfg*."""
     if cfg.backend == "mock":
-        return Generic6DofArm(robot_id, dof=cfg.dof)
+        return RealAgentServerAdapter(
+            robot_id,
+            robot_type=cfg.robot_type,
+            dof=cfg.dof,
+            timeout_s=cfg.request_timeout_s,
+        )
 
     if cfg.backend == "agent_server":
         if not cfg.server_url:
@@ -30,7 +35,13 @@ def build_embodiment(robot_id: str, cfg: EmbodimentBackendConfig) -> EmbodimentA
                 robot_id=robot_id,
                 module_name="embodiment.factory",
             )
-        return Generic6DofArm(robot_id, dof=cfg.dof, server_url=cfg.server_url)
+        return RealAgentServerAdapter(
+            robot_id,
+            robot_type=cfg.robot_type,
+            server_url=cfg.server_url,
+            dof=cfg.dof,
+            timeout_s=cfg.request_timeout_s,
+        )
 
     if cfg.backend == "sim":
         sim_url = cfg.server_url or None
