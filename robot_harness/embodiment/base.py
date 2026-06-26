@@ -33,8 +33,11 @@ What the harness MUST NOT do via this Protocol:
       (see robot_harness/tools/robot_sdk/, e.g. reactive_grasp / visual_servo_to)
     • assume dispatch() is synchronous to motion completion — it returns a handle
 
-Implementations live in embodiment/{arm,humanoid,quadruped,mobile}/ and only
-translate the unified EmbodimentCommand into the per-robot agent_server's
+Implementations are morphology-agnostic wire clients split by transport, not by
+robot_type (ADR-027): real hardware lives in embodiment/real/ (e.g. the HTTP
+agent_server client) and simulators in embodiment/sim/, both sharing the
+AgentServerAdapter base. robot_type is a parameter, never a subclass. An adapter
+only translates the unified EmbodimentCommand into the per-robot agent_server's
 wire format. Hardware-specific control logic does NOT belong here.
 """
 
@@ -142,7 +145,10 @@ class EmbodimentAdapter(Protocol):
       • get_state() / get_camera_frame() are low-frequency sampling endpoints
         for brain reasoning; high-rate streaming belongs in a separate channel.
 
-    Implementations live in embodiment/{arm,humanoid,quadruped,mobile}/.
+    Implementations are split by transport, not morphology (ADR-027):
+    embodiment/real/ for hardware agent_server clients, embodiment/sim/ for
+    simulators — both share the AgentServerAdapter base and take robot_type as a
+    parameter rather than encoding it per subclass.
     """
 
     robot_id: str
