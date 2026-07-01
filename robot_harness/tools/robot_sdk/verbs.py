@@ -8,27 +8,29 @@ per-tick control state.
 
 Minimal subset:
 
-    | Verb              | Intent                              | Idempotent |
-    | ----------------- | ----------------------------------- | ---------- |
-    | reactive_grasp    | "grasp this thing, you figure out   | No         |
-    |                   | the approach"                       |            |
-    | visual_servo_to   | "drive end-effector to this pose    | No         |
-    |                   | using visual feedback"              |            |
-    | move_to_pose      | "go to this pose, no vision needed" | No         |
-    | home              | "return to home configuration"      | Yes        |
+    | Verb              | Intent                                | Idempotent |
+    | ----------------- | ------------------------------------- | ---------- |
+    | reactive_grasp    | "grasp this thing, you figure out     | No         |
+    |                   | the approach"                         |            |
+    | visual_servo_to   | "drive end-effector to this pose      | No         |
+    |                   | using visual feedback"                |            |
+    | move_to_pose      | "go to this pose, no vision needed"   | No         |
+    | locomote_to       | "drive the base to this goal pose"    | No         |
+    | home              | "return to home configuration"        | Yes        |
 
 The harness side stays thin: build a verb tool, register it with the
-:class:`ToolRegistry`, and let Brain pick it up by name. All four tools share
+:class:`ToolRegistry`, and let Brain pick it up by name. All five tools share
 the same :data:`COMPLETION_VERDICT_SCHEMA` output shape so downstream
 ReplanPolicy can treat them uniformly.
 
 Status: when constructed with an ``adapters`` map whose adapter implements
-:class:`SupportsVerbs` (e.g. a sim agent_server), :meth:`_RobotSdkVerbTool._dispatch`
+:class:`SupportsVerbs` (real or sim agent_server), :meth:`_RobotSdkVerbTool._dispatch`
 POSTs the verb to the agent_server's ``/verb/{name}`` endpoint and the on-robot
 mid-loop runs there. Without a verb-capable adapter the tool returns a simulated
-verdict (harness end-to-end tests). The reference sim implements ``move_to_pose``;
-other verbs return a "not implemented" verdict against it until their on-robot
-recipe lands.
+verdict (harness end-to-end tests). Which verbs a given agent_server actually
+implements is discoverable at runtime via its ``/health.available_verbs``; a verb
+whose on-robot backend is unavailable returns a ``failed`` CompletionVerdict rather
+than raising.
 
 Compare and contrast (do not confuse):
     * :class:`robot_harness.tools.robot_sdk.RobotSdkTool` (``execute_action``)
@@ -262,12 +264,17 @@ class _RobotSdkVerbTool:
     async def cancel(self, ctx: ToolContext) -> None:
         """Signal the on-robot agent_server to abort and fall back to a safe pose.
 
-        Today: sets the local cancel event only. Later this will additionally
-        POST an ``/abort`` request to the on-robot agent_server so the in-robot
-        mid/tight-loop can unwind to a safe pose before reporting the final
-        :class:`CompletionVerdict` with ``aborted_by="cancel"``.
+        Sets the local cancel event first (so it holds even if the abort round-trip
+        fails), then POSTs ``/abort`` to the robot's agent_server via the adapter so
+        the in-robot mid/tight-loop unwinds to a safe pose and the in-flight verb
+        reports ``aborted_by="cancel"``. When no verb-capable adapter is wired (mock
+        / offline), only the local event is set — there is nothing on-robot to abort.
         """
         ctx.cancel()
+        adapter = self._adapters.get(ctx.robot_id)
+        abort = getattr(adapter, "abort", None)
+        if abort is not None:
+            await abort(trace_id=ctx.trace_id)
 
     # ----- override hooks ---------------------------------------------------
 
@@ -625,14 +632,13 @@ class LocomoteToTool(_RobotSdkVerbTool):
     )
 
     def to_safety_command(self, args: dict[str, Any], ctx: ToolContext) -> EmbodimentCommand | None:
-        goal = args.get("target_pose")
-        if not goal:
-            return None
-        return EmbodimentCommand(
-            robot_id=args.get("robot_id", ctx.robot_id),
-            command_type="locomotion",
-            values=list(goal),
-        )
+        # No harness-side rule validates a ``locomotion`` command yet: SafetyEnvelope
+        # only checks joint/delta velocity caps and the cartesian workspace box, so a
+        # locomotion goal would record a "passed" audit entry WITHOUT being checked —
+        # a false gate. Return None so the check is honestly skipped and the on-robot
+        # nav stack (local planning + obstacle avoidance) stays authoritative. A
+        # harness-side geofence belongs here once map-frame bounds are configurable.
+        return None
 
     async def _simulate(self, args: dict[str, Any], ctx: ToolContext) -> CompletionVerdict:
         goal = args.get("target_pose", [0.0, 0.0])

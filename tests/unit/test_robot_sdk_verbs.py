@@ -223,6 +223,45 @@ async def test_tool_cancel_sets_context_cancel_flag() -> None:
     assert ctx.is_cancelled is True
 
 
+@pytest.mark.asyncio
+async def test_cancel_routes_abort_to_adapter() -> None:
+    """With a verb-capable adapter wired, cancel() POSTs /abort via adapter.abort()
+    (not just flips the local flag) so an in-flight on-robot verb unwinds."""
+
+    class _FakeAdapter:
+        def __init__(self) -> None:
+            self.aborted_with: str | None = None
+
+        async def abort(self, trace_id: str = "") -> dict[str, object]:
+            self.aborted_with = trace_id
+            return {"aborted": True}
+
+    adapter = _FakeAdapter()
+    tool = ReactiveGraspTool({"robot-0": adapter})
+    ctx = _ctx()
+    await tool.cancel(ctx)
+    assert ctx.is_cancelled is True
+    assert adapter.aborted_with == ctx.trace_id
+
+
+@pytest.mark.asyncio
+async def test_cancel_without_adapter_only_sets_local_flag() -> None:
+    """No verb-capable adapter (mock/offline) -> nothing on-robot to abort; cancel
+    must still succeed and set the local flag."""
+    tool = ReactiveGraspTool()  # no adapters
+    ctx = _ctx()
+    await tool.cancel(ctx)  # must not raise
+    assert ctx.is_cancelled is True
+
+
+def test_locomote_to_emits_no_safety_command() -> None:
+    """locomotion has no harness-side rule yet, so it must NOT fabricate a
+    'passed' safety command (a false gate); on-robot nav stays authoritative."""
+    tool = LocomoteToTool()
+    cmd = tool.to_safety_command({"robot_id": "robot-0", "target_pose": [1.0, 2.0, 0.0]}, _ctx())
+    assert cmd is None
+
+
 # ---------------------------------------------------------------------------
 # Idempotency policy
 # ---------------------------------------------------------------------------
