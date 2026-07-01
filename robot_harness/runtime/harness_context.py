@@ -111,9 +111,14 @@ class HarnessContext:
         """
         from robot_harness.config.loader import load_config
         from robot_harness.embodiment.factory import build_catalog
+        from robot_harness.skill.base import Skill
+        from robot_harness.skill.builtin.navigate_to import NavigateToSkill
+        from robot_harness.skill.builtin.pick import PickSkill
+        from robot_harness.skill.builtin.place import PlaceSkill
         from robot_harness.tools.memory.backend import build_memory
         from robot_harness.tools.memory.query_tool import MemoryQueryTool
         from robot_harness.tools.perception.mcp_bundle import register_perception_tools
+        from robot_harness.tools.robot_sdk import RobotSdkTool, build_robot_sdk_verb_tools
 
         cfg = config or load_config()
         tool_registry = ToolRegistry()
@@ -134,6 +139,24 @@ class HarnessContext:
         # not in recent (working-memory) context — not an every-turn auto-query
         # bypassing the registry (ADR-024 / memory-architecture invariant 4).
         tool_registry.register(MemoryQueryTool(mem))
+
+        # On-robot act surface (ADR-019): verb tools run the mid-loop perception-
+        # action closed loop on the robot; execute_action is the low-level dispatch
+        # skills use for gripper/joint moves. Registered here so both CLI and
+        # programmatic callers get a functional act layer — and so the builtin
+        # skills' ``required_tools`` resolve. Verbs dispatch to a live/sim
+        # agent_server when the adapter supports them, else return a mock verdict.
+        for verb_tool in build_robot_sdk_verb_tools(adapters):
+            tool_registry.register(verb_tool)
+        tool_registry.register(RobotSdkTool(adapters))
+
+        # Built-in skills (versioned tool compositions). The Brain sees each as a
+        # ``skill.<name>`` callable via SkillRegistry.export_for_brain; the
+        # AgentLoop routes the call to Skill.execute (skill_tools gates the
+        # skill's internal hardware calls through SafetyEnvelope).
+        builtin_skills: tuple[Skill, ...] = (PickSkill(), PlaceSkill(), NavigateToSkill())
+        for skill in builtin_skills:
+            skill_registry.register(skill)
 
         return cls(
             config=cfg,

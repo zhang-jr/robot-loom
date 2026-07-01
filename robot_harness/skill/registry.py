@@ -12,6 +12,42 @@ from robot_harness.errors import (
 )
 from robot_harness.observability.tracer import tracer
 from robot_harness.skill.base import Skill, SkillManifest, SwapHandle
+from robot_harness.tools.base import BrainProfile, BrainToolSpec
+from robot_harness.tools.schema import ToolSchema
+
+# `list[...]` as a return annotation on methods defined below the ``list()``
+# method would resolve to that method (the class-scoped ``list`` name shadows the
+# builtin under ``from __future__ import annotations``), so alias the builtin form
+# at module scope where ``list`` is still the builtin.
+_BrainToolSpecs = list[BrainToolSpec]
+
+# A Brain sees a skill as one more callable in its planning vocabulary, named
+# ``skill.<manifest.name>`` so it never collides with an atomic tool name. The
+# AgentLoop strips this prefix to route the call back to Skill.execute.
+SKILL_TOOL_PREFIX = "skill."
+
+# Fallback input schema when a skill's manifest declares no ``data_schema``: a
+# generic Subtask envelope the Brain fills per invocation. Skills read their own
+# fields out of ``parameters`` (e.g. object_name for pick, target_pose for place).
+_GENERIC_SUBTASK_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "robot_id": {"type": "string", "description": "Robot that should run the skill."},
+        "description": {
+            "type": "string",
+            "description": "Natural-language description of this subtask.",
+        },
+        "parameters": {
+            "type": "object",
+            "description": (
+                "Skill-specific parameters, e.g. {'object_name': 'red mug'} for pick "
+                "or {'target_pose': [x, y, z, ...]} for place / navigate_to."
+            ),
+            "additionalProperties": True,
+        },
+    },
+    "required": ["robot_id"],
+}
 
 
 class SkillRegistry:
@@ -111,6 +147,62 @@ class SkillRegistry:
                     continue
             manifests.append(m)
         return manifests
+
+    def _brain_schema(self, manifest: SkillManifest) -> ToolSchema:
+        """Build the Brain-facing tool schema for one skill from its manifest."""
+        data_schema = manifest.data_schema
+        input_schema = (
+            data_schema if data_schema.get("type") == "object" else _GENERIC_SUBTASK_INPUT_SCHEMA
+        )
+        compat = ", ".join(manifest.embodiment_compat) or "any"
+        description = (
+            f"{manifest.description or manifest.name} "
+            f"(skill v{manifest.version}, safety={manifest.safety_class.value}, "
+            f"embodiment={compat})."
+        )
+        return ToolSchema(
+            name=f"{SKILL_TOOL_PREFIX}{manifest.name}",
+            description=description,
+            input_schema=input_schema,
+        )
+
+    def export_for_brain(self, profile: BrainProfile) -> _BrainToolSpecs:
+        """Export active skills as Brain tool specs, named ``skill.<name>``.
+
+        A skill is a versioned composition of tool calls; the Brain sees it as one
+        more callable in its planning vocabulary alongside atomic tools, in the
+        same spec format :meth:`ToolRegistry.export_for_brain` produces. The
+        AgentLoop routes a ``skill.<name>`` call back via :meth:`resolve_brain_call`.
+        """
+        schemas = [
+            self._brain_schema(self._store[name][self._active[name]].manifest)
+            for name in self._active
+            if self._active[name] in self._store[name]
+        ]
+        if profile.name in ("openai", "litellm"):
+            return [s.to_openai_function() for s in schemas]
+        if profile.name == "mcp":
+            return [s.to_mcp_tool() for s in schemas]
+        if profile.name == "anthropic":
+            return [
+                {"name": s.name, "description": s.description, "input_schema": s.input_schema}
+                for s in schemas
+            ]
+        return [s.to_openai_function() for s in schemas]
+
+    def resolve_brain_call(self, name: str) -> Skill | None:
+        """Return the active Skill for a Brain call named ``skill.<name>``, else None.
+
+        None means *name* is not a skill call (or the skill is unregistered) — the
+        caller should treat it as a regular tool. Never raises.
+        """
+        if not name.startswith(SKILL_TOOL_PREFIX):
+            return None
+        skill_name = name[len(SKILL_TOOL_PREFIX) :]
+        versions = self._store.get(skill_name)
+        if not versions:
+            return None
+        return versions.get(self._active.get(skill_name, ""))
 
     def route(self, subtask_description: str, ctx: Any) -> Skill | None:
         """Simple tag/keyword-based routing; returns None if no match."""

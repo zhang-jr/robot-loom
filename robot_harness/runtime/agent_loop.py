@@ -19,8 +19,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, Field
 
@@ -34,14 +35,18 @@ from robot_harness.errors import (
     ChannelError,
     CriticDisagreementError,
     CriticServiceDown,
+    EmbodimentError,
     ReplanLoopExceededError,
+    SkillError,
     ToolCancelledError,
     ToolError,
 )
 from robot_harness.memory.base import MemoryEntry
 from robot_harness.observability.tracer import tracer
 from robot_harness.runtime.harness_context import HarnessContext
-from robot_harness.tools.base import BrainProfile, ToolContext, ToolResult
+from robot_harness.runtime.skill_tools import SafetyGatedToolRegistry
+from robot_harness.skill.base import Skill, Subtask
+from robot_harness.tools.base import BrainProfile, ToolContext, ToolRegistry, ToolResult
 from robot_harness.tools.outbound import NullOutbound, OutboundHandle
 
 _SYSTEM_PROMPT = """\
@@ -120,7 +125,11 @@ class AgentLoop:
             description=task.description,
         )
 
-        tool_specs = self._ctx.tool_registry.export_for_brain(BrainProfile(name="openai"))
+        # The Brain plans over atomic tools AND versioned skills (skill.<name>);
+        # the loop routes a skill.<name> call back to Skill.execute (ADR-025).
+        brain_profile = BrainProfile(name="openai")
+        tool_specs = self._ctx.tool_registry.export_for_brain(brain_profile)
+        tool_specs += self._ctx.skill_registry.export_for_brain(brain_profile)
         all_tool_results: list[dict[str, Any]] = []
         # The loop owns the conversation (ADR-025); it grows across turns.
         messages = self._initial_messages(task)
@@ -637,6 +646,11 @@ class AgentLoop:
         return list(gathered)
 
     async def _invoke_tool(self, req: ToolCallRequest, ctx: ToolContext) -> ToolResult:
+        # A skill.<name> call routes to Skill.execute; everything else is a tool.
+        skill = self._ctx.skill_registry.resolve_brain_call(req.tool_name)
+        if skill is not None:
+            return await self._invoke_skill(skill, req, ctx)
+
         try:
             tool = self._ctx.tool_registry.get(req.tool_name)
         except Exception as exc:  # noqa: BLE001
@@ -670,7 +684,11 @@ class AgentLoop:
                 error="cancelled",
                 error_type="ToolCancelledError",
             )
-        except ToolError as exc:
+        except (ToolError, EmbodimentError) as exc:
+            # A backend/robot fault (server unreachable, robot offline, dispatch
+            # timeout) is a failed tool call the Brain can replan around — NOT a
+            # crash. SafetyEnvelopeViolation is a SafetyError, not caught here, so
+            # it still propagates to trigger e-stop.
             return ToolResult(
                 tool_name=req.tool_name,
                 trace_id=ctx.trace_id,
@@ -678,3 +696,75 @@ class AgentLoop:
                 error=str(exc),
                 error_type=type(exc).__name__,
             )
+
+    async def _invoke_skill(
+        self, skill: Skill, req: ToolCallRequest, ctx: ToolContext
+    ) -> ToolResult:
+        """Dispatch a Brain ``skill.<name>`` call to Skill.execute.
+
+        The skill runs its internal tool calls through a
+        :class:`SafetyGatedToolRegistry`, so each hardware-bound call still passes
+        SafetyEnvelope.check — a SafetyEnvelopeViolation propagates uncaught to
+        trigger e-stop. A ``SkillError`` becomes a failed ToolResult the Brain can
+        react to; the SkillResult is surfaced as the tool output.
+        """
+        t0 = time.monotonic()
+        args = req.args or {}
+        manifest = skill.manifest
+        subtask = Subtask(
+            subtask_id=ctx.subtask_id or req.call_id or manifest.name,
+            description=args.get("description") or manifest.description or manifest.name,
+            robot_id=args.get("robot_id", ctx.robot_id),
+            parameters=args.get("parameters") or {},
+        )
+        # A drop-in for the skill: `.get()` returns safety-gated tools, everything
+        # else delegates. Not a ToolRegistry subclass (it wraps one), so cast to the
+        # param type the Skill Protocol declares.
+        gated_tools = cast(
+            ToolRegistry,
+            SafetyGatedToolRegistry(self._ctx.tool_registry, self._ctx.safety_envelope),
+        )
+        tracer.event(
+            "agent_loop.skill_invoke",
+            trace_id=ctx.trace_id,
+            robot_id=subtask.robot_id,
+            skill=manifest.name,
+            version=manifest.version,
+        )
+        try:
+            result = await skill.execute(subtask, gated_tools, self._ctx)
+        except (SkillError, ToolError, EmbodimentError) as exc:
+            # Skill failure or a backend/robot fault inside one of its tool calls:
+            # surface as a failed ToolResult (true error_type preserved) so the
+            # Brain can react. SafetyEnvelopeViolation is NOT in this tuple — it
+            # propagates uncaught to trigger e-stop.
+            return ToolResult(
+                tool_name=req.tool_name,
+                trace_id=ctx.trace_id,
+                success=False,
+                error=str(exc),
+                error_type=type(exc).__name__,
+                latency_ms=(time.monotonic() - t0) * 1000,
+            )
+        tracer.event(
+            "agent_loop.skill_result",
+            trace_id=ctx.trace_id,
+            skill=manifest.name,
+            outcome=result.outcome,
+            success=result.success,
+        )
+        return ToolResult(
+            tool_name=req.tool_name,
+            trace_id=ctx.trace_id,
+            success=result.success,
+            output={
+                "skill": result.skill_name,
+                "skill_version": result.skill_version,
+                "outcome": result.outcome,
+                "message": result.message,
+                "artifacts": result.artifacts,
+            },
+            error=None if result.success else (result.message or "skill failed"),
+            error_type=None if result.success else "SkillError",
+            latency_ms=(time.monotonic() - t0) * 1000,
+        )
