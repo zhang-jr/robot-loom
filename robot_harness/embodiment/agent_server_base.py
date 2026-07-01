@@ -49,6 +49,7 @@ class AgentServerClient(Protocol):
     async def dispatch(self, cmd: dict[str, Any]) -> dict[str, Any]: ...
     async def safety_check(self, cmd: dict[str, Any]) -> dict[str, Any]: ...
     async def call_verb(self, verb: str, payload: dict[str, Any]) -> dict[str, Any]: ...
+    async def abort(self, payload: dict[str, Any] | None = None) -> dict[str, Any]: ...
     async def aclose(self) -> None: ...
 
 
@@ -108,6 +109,16 @@ class AgentServerAdapter:
         the verb path is identical across real hardware and simulator backends.
         """
         return await self._client.call_verb(verb, payload)
+
+    async def abort(self, trace_id: str = "") -> dict[str, Any]:
+        """Stop the in-flight action / verb on the robot (agent_server ``/abort``).
+
+        Robot-level, not verb-level: cancelling an in-flight verb and cancelling a
+        low-level dispatch go through the same ``/abort``. The verb tool's
+        ``cancel()`` routes here so a mid-loop verb actually unwinds on the robot
+        instead of only flipping a local flag.
+        """
+        return await self._client.abort({"trace_id": trace_id})
 
     async def aclose(self) -> None:
         await self._client.aclose()

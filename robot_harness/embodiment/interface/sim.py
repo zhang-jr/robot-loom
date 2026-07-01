@@ -30,10 +30,10 @@ from robot_harness.errors import RobotOfflineError
 class SimAgentServerClient:
     """Thin async HTTP client for an external simulator agent_server.
 
-    Unlike the real-robot ``HttpAgentServerClient`` stub, this client performs
-    real HTTP calls (a reference sim server exists to talk to). Transport errors
-    are translated to ``RobotOfflineError`` so the embodiment layer surfaces a
-    typed, traceable failure instead of a raw ``httpx`` exception.
+    Like the real-robot ``HttpAgentServerClient``, this client performs real HTTP
+    calls (a reference sim server exists to talk to). Transport errors are
+    translated to ``RobotOfflineError`` so the embodiment layer surfaces a typed,
+    traceable failure instead of a raw ``httpx`` exception.
 
     A custom ``transport`` (e.g. ``httpx.MockTransport``) may be injected for
     tests so the real request/response path is exercised without a live server.
@@ -132,3 +132,7 @@ class SimAgentServerClient:
         CompletionVerdict-shaped dict.
         """
         return await self._post(f"/verb/{verb}", payload)
+
+    async def abort(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Stop the in-flight action / verb in the sim. POST /abort."""
+        return await self._post("/abort", payload or {})
