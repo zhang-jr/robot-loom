@@ -473,9 +473,23 @@ class AgentLoop:
             try:
                 verdict = await heuristic_critic.judge(frame, None, task.description)
                 return verdict, active_critic, heuristic_critic
-            except Exception:  # noqa: BLE001
+            except Exception as fallback_exc:  # noqa: BLE001
+                tracer.event(
+                    "agent_loop.critic_skipped",
+                    trace_id=trace_id,
+                    robot_id=task.robot_id,
+                    error=str(fallback_exc),
+                    warning="Heuristic critic fallback also failed — turn runs unsupervised.",
+                )
                 return None, active_critic, heuristic_critic
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            tracer.event(
+                "agent_loop.critic_skipped",
+                trace_id=trace_id,
+                robot_id=task.robot_id,
+                error=str(exc),
+                warning="Critic judge failed unexpectedly — turn runs unsupervised.",
+            )
             return None, active_critic, heuristic_critic
 
     # ------------------------------------------------------------------

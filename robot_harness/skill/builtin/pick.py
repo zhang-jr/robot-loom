@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from robot_harness.memory.base import MemoryEntry
+from robot_harness.observability.tracer import tracer
 from robot_harness.skill.base import SkillManifest, SkillResult, Subtask
 from robot_harness.skill.safety_class import SafetyClass
 from robot_harness.tools.base import ToolContext, ToolRegistry
@@ -96,5 +97,13 @@ async def _write_episode(ctx: Any, subtask: Subtask, result: SkillResult, object
                 tags=["skill:pick", result.outcome, subtask.robot_id],
             )
         )
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        # Episode write is best-effort: failure must not fail the skill, but it
+        # must be observable.
+        tracer.event(
+            "episode_write_failed",
+            robot_id=subtask.robot_id,
+            subtask_id=subtask.subtask_id,
+            skill="pick",
+            error=str(exc),
+        )
