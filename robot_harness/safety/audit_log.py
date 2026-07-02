@@ -18,7 +18,10 @@ class AuditEntry(BaseModel):
     robot_id: str
     subtask_id: str = ""
     tool_name: str = ""
-    outcome: Literal["passed", "violated"]
+    # "skipped" = command reached the envelope but no configured rule can check it
+    # (e.g. a locomotion goal with no map geofence configured). Recorded honestly
+    # instead of a false "passed".
+    outcome: Literal["passed", "violated", "skipped"]
     violated_rules: list[str] = Field(default_factory=list)
     command_type: str = ""
     timestamp: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))

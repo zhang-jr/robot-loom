@@ -94,7 +94,8 @@ class EmbodimentCommand(BaseModel):
       - joint      : [pos_0, pos_1, ..., pos_N]  (radians, N = DOF)
       - cartesian  : [x, y, z, ...]  (meters; orientation repr is adapter-specific)
       - delta      : [dx, dy, dz, ...] (meters/radians, same length as cartesian)
-      - locomotion : adapter-specific; no safety-layer interpretation yet
+      - locomotion : [x, y] or [x, y, yaw]  (map frame, meters/radians; goal pose,
+                     checked against the map geofence when safety.map_bounds_m is set)
       - hand_grasp : [width_or_ratio]  (0=open, 1=closed; extra for force params)
     """
 

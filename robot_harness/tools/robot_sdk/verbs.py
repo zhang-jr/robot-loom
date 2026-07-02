@@ -632,13 +632,19 @@ class LocomoteToTool(_RobotSdkVerbTool):
     )
 
     def to_safety_command(self, args: dict[str, Any], ctx: ToolContext) -> EmbodimentCommand | None:
-        # No harness-side rule validates a ``locomotion`` command yet: SafetyEnvelope
-        # only checks joint/delta velocity caps and the cartesian workspace box, so a
-        # locomotion goal would record a "passed" audit entry WITHOUT being checked —
-        # a false gate. Return None so the check is honestly skipped and the on-robot
-        # nav stack (local planning + obstacle avoidance) stays authoritative. A
-        # harness-side geofence belongs here once map-frame bounds are configurable.
-        return None
+        # SafetyEnvelope checks the goal against the map-frame geofence
+        # (``safety.map_bounds_m``). With no geofence configured the envelope
+        # honestly skips (audit outcome "skipped", never a false "passed") and the
+        # on-robot nav stack (local planning + obstacle avoidance) stays
+        # authoritative either way — the geofence only bounds the goal position.
+        pose = args.get("target_pose")
+        if not pose:
+            return None
+        return EmbodimentCommand(
+            robot_id=args.get("robot_id", ctx.robot_id),
+            command_type="locomotion",
+            values=list(pose),
+        )
 
     async def _simulate(self, args: dict[str, Any], ctx: ToolContext) -> CompletionVerdict:
         goal = args.get("target_pose", [0.0, 0.0])

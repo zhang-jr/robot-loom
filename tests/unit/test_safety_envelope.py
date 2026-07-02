@@ -82,6 +82,68 @@ async def test_audit_log_written_on_pass(
     assert any(e.outcome == "passed" for e in entries)
 
 
+# ---------------------------------------------------------------------------
+# Locomotion — map-frame geofence
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def geofenced_envelope(audit_log: SafetyAuditLog) -> SafetyEnvelope:
+    cfg = SafetyConfig(map_bounds_m=[-5.0, -5.0, 5.0, 5.0])
+    return SafetyEnvelope(cfg, audit_log=audit_log)
+
+
+@pytest.mark.asyncio
+async def test_locomotion_goal_inside_geofence_passes(
+    geofenced_envelope: SafetyEnvelope,
+) -> None:
+    cmd = EmbodimentCommand(robot_id="r0", command_type="locomotion", values=[1.0, 2.0, 0.5])
+    verdict = await geofenced_envelope.check(cmd, trace_id="t8")
+    assert verdict.passed
+
+
+@pytest.mark.asyncio
+async def test_locomotion_goal_outside_geofence_raises(
+    geofenced_envelope: SafetyEnvelope, audit_log: SafetyAuditLog
+) -> None:
+    cmd = EmbodimentCommand(robot_id="r0", command_type="locomotion", values=[9.0, 0.0])
+    with pytest.raises(SafetyEnvelopeViolation) as exc_info:
+        await geofenced_envelope.check(cmd, trace_id="t9")
+    assert "geofence" in exc_info.value.violated_rules[0]
+    assert any(e.outcome == "violated" for e in audit_log.tail(5))
+
+
+@pytest.mark.asyncio
+async def test_locomotion_yaw_is_not_geofenced(geofenced_envelope: SafetyEnvelope) -> None:
+    # Yaw far beyond any positional bound must not trip the geofence.
+    cmd = EmbodimentCommand(robot_id="r0", command_type="locomotion", values=[0.0, 0.0, 99.0])
+    verdict = await geofenced_envelope.check(cmd, trace_id="t10")
+    assert verdict.passed
+
+
+@pytest.mark.asyncio
+async def test_locomotion_malformed_goal_raises(geofenced_envelope: SafetyEnvelope) -> None:
+    # A goal that is not [x, y] / [x, y, yaw] cannot be validated — reject it.
+    cmd = EmbodimentCommand(robot_id="r0", command_type="locomotion", values=[1.0])
+    with pytest.raises(SafetyEnvelopeViolation):
+        await geofenced_envelope.check(cmd, trace_id="t11")
+
+
+@pytest.mark.asyncio
+async def test_locomotion_without_geofence_is_skipped_not_passed(
+    envelope: SafetyEnvelope, audit_log: SafetyAuditLog
+) -> None:
+    """No map_bounds_m configured → honest skip: verdict passes (dispatch is not
+    blocked) but the audit records "skipped", never a false "passed"."""
+    cmd = EmbodimentCommand(robot_id="r0", command_type="locomotion", values=[9999.0, 9999.0])
+    verdict = await envelope.check(cmd, trace_id="t12")
+    assert verdict.passed
+    assert "unchecked" in verdict.reason
+    entries = audit_log.tail(5)
+    assert any(e.outcome == "skipped" for e in entries)
+    assert not any(e.outcome == "passed" for e in entries)
+
+
 @pytest.mark.asyncio
 async def test_disabled_safety_always_passes() -> None:
     cfg = SafetyConfig(enabled=False)

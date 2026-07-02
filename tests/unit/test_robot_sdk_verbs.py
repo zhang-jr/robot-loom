@@ -254,11 +254,20 @@ async def test_cancel_without_adapter_only_sets_local_flag() -> None:
     assert ctx.is_cancelled is True
 
 
-def test_locomote_to_emits_no_safety_command() -> None:
-    """locomotion has no harness-side rule yet, so it must NOT fabricate a
-    'passed' safety command (a false gate); on-robot nav stays authoritative."""
+def test_locomote_to_emits_locomotion_safety_command() -> None:
+    """The goal pose is exposed to SafetyEnvelope as a locomotion command so the
+    map-frame geofence (safety.map_bounds_m) can bound it pre-dispatch."""
     tool = LocomoteToTool()
     cmd = tool.to_safety_command({"robot_id": "robot-0", "target_pose": [1.0, 2.0, 0.0]}, _ctx())
+    assert cmd is not None
+    assert cmd.command_type == "locomotion"
+    assert cmd.robot_id == "robot-0"
+    assert cmd.values == [1.0, 2.0, 0.0]
+
+
+def test_locomote_to_without_target_emits_no_safety_command() -> None:
+    tool = LocomoteToTool()
+    cmd = tool.to_safety_command({"robot_id": "robot-0"}, _ctx())
     assert cmd is None
 
 
