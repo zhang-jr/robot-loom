@@ -154,6 +154,10 @@ module = [
     "msgpack.*",
     "prometheus_client.*",
     "opentelemetry.*",
+    "starlette",
+    "starlette.*",
+    "uvicorn",
+    "uvicorn.*",
     "yaml",
 ]
 ignore_missing_imports = true
@@ -199,6 +203,14 @@ warn_unused_ignores = false
 # adapter — all callers outside tools/mcp/ still see typed ToolResult.
 module = ["robot_harness.tools.mcp.client"]
 disallow_any_unimported = false
+
+[[tool.mypy.overrides]]
+# Reverse MCP server: same unstubbed mcp SDK, plus its lowlevel Server
+# registers handlers via untyped decorators (@server.list_tools / .call_tool).
+# Relaxed only for this module — the tool-facing surface stays typed.
+module = ["robot_harness.tools.mcp.server"]
+disallow_any_unimported = false
+disallow_untyped_decorators = false
 
 # ---------------------------------------------------------------------------
 # Pytest
