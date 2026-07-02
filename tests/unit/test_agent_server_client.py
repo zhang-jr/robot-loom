@@ -14,6 +14,7 @@ from robot_harness.embodiment.interface.http import (
     HttpAgentServerClient,
     MockAgentServerClient,
 )
+from robot_harness.embodiment.interface.sim import SimAgentServerClient
 from robot_harness.embodiment.real.agent_server import RealAgentServerAdapter
 from robot_harness.errors import RobotOfflineError
 
@@ -103,3 +104,85 @@ def test_adapter_uses_real_client_when_server_url_set() -> None:
 def test_adapter_uses_mock_client_when_no_server_url() -> None:
     adapter = RealAgentServerAdapter("r0")
     assert isinstance(adapter._client, MockAgentServerClient)
+
+
+# ---------------------------------------------------------------------------
+# available_verbs(): live capability read from /health (ADR-019)
+# ---------------------------------------------------------------------------
+
+
+def _health_client(payload: dict[str, object], robot_id: str = "r0") -> HttpAgentServerClient:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/health"
+        return httpx.Response(200, json=payload)
+
+    return _client(handler, robot_id)
+
+
+@pytest.mark.asyncio
+async def test_available_verbs_reads_health_allowlist() -> None:
+    # A quadruped whose arm bridge is down advertises only locomotion + home.
+    client = _health_client({"status": "ok", "available_verbs": ["locomote_to", "home"]}, "go2")
+    adapter = RealAgentServerAdapter("go2", client=client)
+    assert await adapter.available_verbs() == ["locomote_to", "home"]
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_available_verbs_explicit_empty_means_zero_verbs() -> None:
+    # [] is a real answer ("all capability bridges down"), distinct from unknown.
+    adapter = RealAgentServerAdapter("r0", client=_health_client({"available_verbs": []}))
+    assert await adapter.available_verbs() == []
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_available_verbs_none_when_backend_does_not_advertise() -> None:
+    # The offline mock omits the key -> None ("unknown"), never prune on it.
+    adapter = RealAgentServerAdapter("r0")
+    assert await adapter.available_verbs() is None
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_value", [None, "home", 42, {"home": True}])
+async def test_available_verbs_none_on_malformed_payload(bad_value: object) -> None:
+    """A null / string / non-list value must read as 'unknown', not crash or
+    char-split into a bogus allowlist."""
+    adapter = RealAgentServerAdapter("r0", client=_health_client({"available_verbs": bad_value}))
+    assert await adapter.available_verbs() is None
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_available_verbs_raises_robot_offline_on_non_json_health() -> None:
+    """A 200 with a non-JSON body (proxy error page) is a typed offline error,
+    not a JSONDecodeError escaping into the planning path."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<html>gateway error</html>")
+
+    adapter = RealAgentServerAdapter("r0", client=_client(handler))
+    with pytest.raises(RobotOfflineError, match="unreachable"):
+        await adapter.available_verbs()
+    await adapter.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Sim wire client speaks the same /health contract
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sim_client_implements_health() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/health"
+        return httpx.Response(200, json={"status": "ok", "available_verbs": ["home"]})
+
+    c = SimAgentServerClient(
+        "http://sim",
+        "sim-0",
+        transport=httpx.MockTransport(handler),
+    )
+    assert (await c.health())["available_verbs"] == ["home"]
+    await c.aclose()

@@ -27,10 +27,12 @@ Status: when constructed with an ``adapters`` map whose adapter implements
 :class:`SupportsVerbs` (real or sim agent_server), :meth:`_RobotSdkVerbTool._dispatch`
 POSTs the verb to the agent_server's ``/verb/{name}`` endpoint and the on-robot
 mid-loop runs there. Without a verb-capable adapter the tool returns a simulated
-verdict (harness end-to-end tests). Which verbs a given agent_server actually
-implements is discoverable at runtime via its ``/health.available_verbs``; a verb
-whose on-robot backend is unavailable returns a ``failed`` CompletionVerdict rather
-than raising.
+verdict (harness end-to-end tests). Which verbs an agent_server actually implements
+is discovered live via ``/health.available_verbs`` (``SupportsVerbs.available_verbs``);
+at planning time the harness excludes unadvertised verb tools from the Brain's
+vocabulary (:func:`unavailable_verb_tool_names` → ``export_for_brain(exclude_names=…)``,
+see ``HarnessContext.unavailable_tool_names``), and a verb that still reaches an
+unavailable backend returns a ``failed`` CompletionVerdict rather than raising.
 
 Compare and contrast (do not confuse):
     * :class:`robot_harness.tools.robot_sdk.RobotSdkTool` (``execute_action``)
@@ -44,6 +46,7 @@ Compare and contrast (do not confuse):
 from __future__ import annotations
 
 import time
+from collections.abc import Collection
 from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -664,6 +667,33 @@ class LocomoteToTool(_RobotSdkVerbTool):
 # ---------------------------------------------------------------------------
 
 
+def unavailable_verb_tool_names(available_verbs: Collection[str] | None) -> frozenset[str]:
+    """Verb TOOL names to exclude from the Brain's planning vocabulary.
+
+    ``available_verbs`` is the fleet's live allowlist of bare verb names (from
+    ``/health.available_verbs``, see ``AgentServerAdapter.available_verbs``):
+
+    * ``None`` — availability unknown (some backend doesn't advertise): exclude
+      nothing; the call-time ``SupportsVerbs`` / simulated-verdict path stays
+      authoritative. This never removes capability that works today.
+    * otherwise — every verb tool whose bare verb is absent is excluded, so the
+      Brain never plans a verb no robot can currently run. An empty collection
+      (all bridges explicitly down) excludes all verb tools.
+
+    Returns prefixed TOOL names (``robot_sdk.<verb>``) ready to feed to
+    ``ToolRegistry.export_for_brain(exclude_names=...)`` and
+    ``SkillRegistry.export_for_brain(unavailable_tools=...)`` — the filtering
+    happens on tool names BEFORE spec serialization, so no caller needs to know
+    any Brain profile's wire shape.
+    """
+    if available_verbs is None:
+        return frozenset()
+    allowed = set(available_verbs)
+    return frozenset(
+        tool_name for tool_name in VERB_TOOL_NAMES if tool_name.split(".", 1)[1] not in allowed
+    )
+
+
 def build_robot_sdk_verb_tools(
     adapters: dict[str, Any] | None = None,
 ) -> list[_RobotSdkVerbTool]:
@@ -698,4 +728,5 @@ __all__ = [
     "ReactiveGraspTool",
     "VisualServoToTool",
     "build_robot_sdk_verb_tools",
+    "unavailable_verb_tool_names",
 ]

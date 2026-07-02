@@ -50,6 +50,7 @@ class AgentServerClient(Protocol):
     async def safety_check(self, cmd: dict[str, Any]) -> dict[str, Any]: ...
     async def call_verb(self, verb: str, payload: dict[str, Any]) -> dict[str, Any]: ...
     async def abort(self, payload: dict[str, Any] | None = None) -> dict[str, Any]: ...
+    async def health(self) -> dict[str, Any]: ...
     async def aclose(self) -> None: ...
 
 
@@ -109,6 +110,37 @@ class AgentServerAdapter:
         the verb path is identical across real hardware and simulator backends.
         """
         return await self._client.call_verb(verb, payload)
+
+    async def available_verbs(self) -> list[str] | None:
+        """Verbs this robot's agent_server *currently* advertises (``/health``).
+
+        Reflects live backend reachability, not a fixed capability list (ADR-019):
+        a quadruped whose arm bridge is down drops its manipulation verbs from
+        ``/health.available_verbs`` while it's down, so the harness can prune those
+        verbs from the Brain's planning vocabulary instead of letting the Brain
+        plan a verb that fails at call time.
+
+        Returns bare verb names (``reactive_grasp`` / ``locomote_to`` / … —
+        WITHOUT the ``robot_sdk.`` tool prefix). Three distinct outcomes:
+
+        * ``None``  — the backend does not advertise a verb set (key absent or
+          malformed payload; mock / older agent_server): capability UNKNOWN,
+          callers must not prune anything.
+        * ``[]``    — the backend explicitly advertises zero verbs right now
+          (every capability bridge down): prune everything.
+        * ``[...]`` — the current allowlist.
+
+        Raises :class:`RobotOfflineError` when ``/health`` is unreachable or not
+        speaking the contract (the wire client translates transport/decode errors).
+        """
+        health = await self._client.health()
+        verbs = health.get("available_verbs")
+        if not isinstance(verbs, list):
+            # Absent, null, or a non-list (e.g. a bare string) — the backend is
+            # not advertising a usable verb set; report "unknown", never a
+            # char-split or a crash.
+            return None
+        return [str(v) for v in verbs]
 
     async def abort(self, trace_id: str = "") -> dict[str, Any]:
         """Stop the in-flight action / verb on the robot (agent_server ``/abort``).

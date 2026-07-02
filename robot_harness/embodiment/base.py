@@ -179,6 +179,12 @@ class SupportsVerbs(Protocol):
 
     Owned by the embodiment layer so the dependency points downward:
     ``tools/robot_sdk`` imports this to gate dispatch, not the other way around.
+
+    ``available_verbs`` is the discovery half of the capability: which verbs the
+    backend *currently* advertises (live from ``/health``, ADR-019). ``None``
+    means the backend does not advertise a verb set (unknown — never prune);
+    ``[]`` means it explicitly advertises zero verbs right now.
     """
 
     async def call_verb(self, verb: str, payload: dict[str, Any]) -> dict[str, Any]: ...
+    async def available_verbs(self) -> list[str] | None: ...

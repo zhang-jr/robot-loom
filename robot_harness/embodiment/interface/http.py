@@ -84,9 +84,12 @@ class HttpAgentServerClient:
         try:
             resp = await client.get(path)
             resp.raise_for_status()
-        except httpx.HTTPError as exc:
+            data: dict[str, Any] = resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            # ValueError covers json.JSONDecodeError: a 200 with a non-JSON body
+            # (proxy error page, captive portal) is "not speaking the contract",
+            # the same typed failure as unreachable.
             raise self._offline(path, exc) from exc
-        data: dict[str, Any] = resp.json()
         return data
 
     async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -94,9 +97,9 @@ class HttpAgentServerClient:
         try:
             resp = await client.post(path, json=payload)
             resp.raise_for_status()
-        except httpx.HTTPError as exc:
+            data: dict[str, Any] = resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
             raise self._offline(path, exc) from exc
-        data: dict[str, Any] = resp.json()
         return data
 
     async def get_state(self) -> dict[str, Any]:
@@ -179,7 +182,10 @@ class MockAgentServerClient:
         return {"aborted": True, "robot_id": self._robot_id}
 
     async def health(self) -> dict[str, Any]:
-        return {"status": "ok", "robot_id": self._robot_id, "available_verbs": []}
+        # No "available_verbs" key: the mock does not ADVERTISE a verb set (every
+        # verb succeeds with a canned verdict), and "absent" must stay
+        # distinguishable from "explicitly zero verbs" ([]) at the adapter layer.
+        return {"status": "ok", "robot_id": self._robot_id}
 
     async def aclose(self) -> None:
         return None

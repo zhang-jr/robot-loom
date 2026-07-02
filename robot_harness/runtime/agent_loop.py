@@ -128,8 +128,15 @@ class AgentLoop:
         # The Brain plans over atomic tools AND versioned skills (skill.<name>);
         # the loop routes a skill.<name> call back to Skill.execute (ADR-025).
         brain_profile = BrainProfile(name="openai")
-        tool_specs = self._ctx.tool_registry.export_for_brain(brain_profile)
-        tool_specs += self._ctx.skill_registry.export_for_brain(brain_profile)
+        # Live-capability gate (ADR-019): tools no robot can currently run — and
+        # skills requiring them — never enter the Brain's planning vocabulary.
+        unavailable = await self._ctx.unavailable_tool_names(trace_id)
+        tool_specs = self._ctx.tool_registry.export_for_brain(
+            brain_profile, exclude_names=unavailable
+        )
+        tool_specs += self._ctx.skill_registry.export_for_brain(
+            brain_profile, unavailable_tools=unavailable
+        )
         all_tool_results: list[dict[str, Any]] = []
         # The loop owns the conversation (ADR-025); it grows across turns.
         messages = self._initial_messages(task)

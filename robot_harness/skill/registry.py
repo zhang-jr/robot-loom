@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 from typing import Any
 
 from robot_harness.errors import (
@@ -166,19 +167,44 @@ class SkillRegistry:
             input_schema=input_schema,
         )
 
-    def export_for_brain(self, profile: BrainProfile) -> _BrainToolSpecs:
+    def export_for_brain(
+        self,
+        profile: BrainProfile,
+        *,
+        unavailable_tools: Collection[str] = (),
+    ) -> _BrainToolSpecs:
         """Export active skills as Brain tool specs, named ``skill.<name>``.
 
         A skill is a versioned composition of tool calls; the Brain sees it as one
         more callable in its planning vocabulary alongside atomic tools, in the
         same spec format :meth:`ToolRegistry.export_for_brain` produces. The
         AgentLoop routes a ``skill.<name>`` call back via :meth:`resolve_brain_call`.
+
+        ``unavailable_tools`` hides skills whose ``manifest.required_tools``
+        depend on a currently unavailable tool (e.g. an on-robot verb the fleet
+        does not advertise — see ``HarnessContext.unavailable_tool_names``): the
+        same live-capability set must gate both layers, otherwise the Brain
+        side-steps a pruned verb through its skill wrapper and fails at call
+        time anyway. Per-call and session-scoped; hidden skills stay registered.
         """
-        schemas = [
-            self._brain_schema(self._store[name][self._active[name]].manifest)
+        unavailable = set(unavailable_tools)
+        manifests = [
+            self._store[name][self._active[name]].manifest
             for name in self._active
             if self._active[name] in self._store[name]
         ]
+        schemas = []
+        for m in manifests:
+            blocked = unavailable.intersection(m.required_tools)
+            if blocked:
+                tracer.event(
+                    "skill.export_gated",
+                    skill_name=m.name,
+                    version=m.version,
+                    unavailable_required_tools=sorted(blocked),
+                )
+                continue
+            schemas.append(self._brain_schema(m))
         if profile.name in ("openai", "litellm"):
             return [s.to_openai_function() for s in schemas]
         if profile.name == "mcp":

@@ -30,6 +30,7 @@ from robot_harness.tools.robot_sdk import (
     ReactiveGraspTool,
     VisualServoToTool,
     build_robot_sdk_verb_tools,
+    unavailable_verb_tool_names,
 )
 
 
@@ -67,6 +68,36 @@ def test_verb_classes_use_native_backend() -> None:
     """Verbs run native (in-process) until the on-robot agent_server HTTP/WS transport lands."""
     for tool in build_robot_sdk_verb_tools():
         assert tool.backend == "native"
+
+
+# ---------------------------------------------------------------------------
+# unavailable_verb_tool_names — live-capability exclusion set (ADR-019)
+# ---------------------------------------------------------------------------
+
+
+def test_unavailable_verbs_none_means_unknown_excludes_nothing() -> None:
+    """Backend doesn't advertise a verb set (mock / sim / old server) → never prune."""
+    assert unavailable_verb_tool_names(None) == frozenset()
+
+
+def test_unavailable_verbs_excludes_unadvertised_only() -> None:
+    # Go2 with no arm bridge advertises only locomotion + home.
+    excluded = unavailable_verb_tool_names({"locomote_to", "home"})
+    assert excluded == {
+        ROBOT_SDK_REACTIVE_GRASP,
+        ROBOT_SDK_VISUAL_SERVO_TO,
+        ROBOT_SDK_MOVE_TO_POSE,
+    }
+
+
+def test_unavailable_verbs_explicit_empty_excludes_all() -> None:
+    """[] is a real answer — every capability bridge down → all verb tools gated."""
+    assert unavailable_verb_tool_names(set()) == frozenset(VERB_TOOL_NAMES)
+
+
+def test_unavailable_verbs_full_allowlist_excludes_nothing() -> None:
+    bare = {name.split(".", 1)[1] for name in VERB_TOOL_NAMES}
+    assert unavailable_verb_tool_names(bare) == frozenset()
 
 
 # ---------------------------------------------------------------------------

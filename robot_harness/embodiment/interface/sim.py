@@ -7,8 +7,9 @@ only holds this thin client. The tight/mid control loops (physics step, joint
 servo) run inside the sim process, never in the harness (ADR-019).
 
 The sim agent_server speaks the same wire contract as a real robot agent_server
-(``/state`` / ``/dispatch`` / ``/camera/{name}`` / ``/safety_check``) plus three
-sim-lifecycle endpoints that hardware does not have:
+(``/state`` / ``/dispatch`` / ``/camera/{name}`` / ``/safety_check`` /
+``/verb/{name}`` / ``/abort`` / ``/health``) plus three sim-lifecycle endpoints
+that hardware does not have:
 
     POST /reset         — reset the simulator to its initial state
     POST /scene         — load a scene description (MJCF / USD path or inline)
@@ -75,14 +76,16 @@ class SimAgentServerClient:
         try:
             resp = await client.get(path)
             resp.raise_for_status()
-        except httpx.HTTPError as exc:
+            data: dict[str, Any] = resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            # ValueError covers json.JSONDecodeError: a 200 with a non-JSON body
+            # is "not speaking the contract", the same typed failure as unreachable.
             raise RobotOfflineError(
                 f"sim agent_server ({self._sim_engine}) unreachable at "
                 f"{self._base_url}{path}: {exc}",
                 robot_id=self._robot_id,
                 module_name="embodiment.interface.sim",
             ) from exc
-        data: dict[str, Any] = resp.json()
         return data
 
     async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -90,14 +93,14 @@ class SimAgentServerClient:
         try:
             resp = await client.post(path, json=payload)
             resp.raise_for_status()
-        except httpx.HTTPError as exc:
+            data: dict[str, Any] = resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
             raise RobotOfflineError(
                 f"sim agent_server ({self._sim_engine}) unreachable at "
                 f"{self._base_url}{path}: {exc}",
                 robot_id=self._robot_id,
                 module_name="embodiment.interface.sim",
             ) from exc
-        data: dict[str, Any] = resp.json()
         return data
 
     # -- shared robot agent_server contract --------------------------------
@@ -136,3 +139,7 @@ class SimAgentServerClient:
     async def abort(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         """Stop the in-flight action / verb in the sim. POST /abort."""
         return await self._post("/abort", payload or {})
+
+    async def health(self) -> dict[str, Any]:
+        """Liveness + advertised verbs. GET /health (same contract as real hardware)."""
+        return await self._get("/health")

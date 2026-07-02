@@ -171,6 +171,21 @@ def test_brain_visible_false_hidden_from_export() -> None:
     assert {s["function"]["name"] for s in specs} == {"echo"}
 
 
+def test_export_exclude_names_hides_per_call_only() -> None:
+    """exclude_names is a session-scoped export filter (live-capability gate):
+    the tool stays registered and invocable, and a later export without the
+    exclusion sees it again."""
+    reg = ToolRegistry()
+    reg.register(_EchoTool())
+
+    specs = reg.export_for_brain(BrainProfile(name="openai"), exclude_names={"echo"})
+    assert specs == []
+    assert "echo" in reg  # still registered + invocable
+
+    specs = reg.export_for_brain(BrainProfile(name="openai"))
+    assert {s["function"]["name"] for s in specs} == {"echo"}
+
+
 def test_validate_args_missing_required() -> None:
     reg = ToolRegistry()
     reg.register(_EchoTool())
