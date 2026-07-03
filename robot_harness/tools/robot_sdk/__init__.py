@@ -68,6 +68,7 @@ from robot_harness.tools.robot_sdk.verbs import (
     ReactiveGraspTool,
     VisualServoToTool,
     build_robot_sdk_verb_tools,
+    unavailable_verb_tool_names,
 )
 
 __all__ = [
@@ -87,4 +88,5 @@ __all__ = [
     "RobotSdkTool",
     "VisualServoToTool",
     "build_robot_sdk_verb_tools",
+    "unavailable_verb_tool_names",
 ]

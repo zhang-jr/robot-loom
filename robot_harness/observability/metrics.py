@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from robot_harness.observability.tracer import tracer
+
 try:
     from prometheus_client import Counter, Histogram, start_http_server
 
@@ -90,21 +92,14 @@ def start_metrics_server(port: int = 9090) -> None:
     No-ops if prometheus_client is not installed.  Logs to stderr.
     """
     if not _HAVE_PROMETHEUS:
-        import sys
-
-        print(
-            f"[robot-loom] prometheus_client not installed — metrics server not started "
-            f"(would listen on :{port})",
-            file=sys.stderr,
+        tracer.event(
+            "metrics.server_unavailable",
+            port=port,
+            warning="prometheus_client not installed — metrics server not started",
         )
         return
     start_http_server(port)
-    import sys
-
-    print(
-        f"[robot-loom] Prometheus metrics available at http://localhost:{port}/metrics",
-        file=sys.stderr,
-    )
+    tracer.event("metrics.server_started", endpoint=f"http://localhost:{port}/metrics")
 
 
 def metrics_available() -> bool:

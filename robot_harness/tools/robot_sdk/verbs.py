@@ -8,27 +8,31 @@ per-tick control state.
 
 Minimal subset:
 
-    | Verb              | Intent                              | Idempotent |
-    | ----------------- | ----------------------------------- | ---------- |
-    | reactive_grasp    | "grasp this thing, you figure out   | No         |
-    |                   | the approach"                       |            |
-    | visual_servo_to   | "drive end-effector to this pose    | No         |
-    |                   | using visual feedback"              |            |
-    | move_to_pose      | "go to this pose, no vision needed" | No         |
-    | home              | "return to home configuration"      | Yes        |
+    | Verb              | Intent                                | Idempotent |
+    | ----------------- | ------------------------------------- | ---------- |
+    | reactive_grasp    | "grasp this thing, you figure out     | No         |
+    |                   | the approach"                         |            |
+    | visual_servo_to   | "drive end-effector to this pose      | No         |
+    |                   | using visual feedback"                |            |
+    | move_to_pose      | "go to this pose, no vision needed"   | No         |
+    | locomote_to       | "drive the base to this goal pose"    | No         |
+    | home              | "return to home configuration"        | Yes        |
 
 The harness side stays thin: build a verb tool, register it with the
-:class:`ToolRegistry`, and let Brain pick it up by name. All four tools share
+:class:`ToolRegistry`, and let Brain pick it up by name. All five tools share
 the same :data:`COMPLETION_VERDICT_SCHEMA` output shape so downstream
 ReplanPolicy can treat them uniformly.
 
 Status: when constructed with an ``adapters`` map whose adapter implements
-:class:`SupportsVerbs` (e.g. a sim agent_server), :meth:`_RobotSdkVerbTool._dispatch`
+:class:`SupportsVerbs` (real or sim agent_server), :meth:`_RobotSdkVerbTool._dispatch`
 POSTs the verb to the agent_server's ``/verb/{name}`` endpoint and the on-robot
 mid-loop runs there. Without a verb-capable adapter the tool returns a simulated
-verdict (harness end-to-end tests). The reference sim implements ``move_to_pose``;
-other verbs return a "not implemented" verdict against it until their on-robot
-recipe lands.
+verdict (harness end-to-end tests). Which verbs an agent_server actually implements
+is discovered live via ``/health.available_verbs`` (``SupportsVerbs.available_verbs``);
+at planning time the harness excludes unadvertised verb tools from the Brain's
+vocabulary (:func:`unavailable_verb_tool_names` → ``export_for_brain(exclude_names=…)``,
+see ``HarnessContext.unavailable_tool_names``), and a verb that still reaches an
+unavailable backend returns a ``failed`` CompletionVerdict rather than raising.
 
 Compare and contrast (do not confuse):
     * :class:`robot_harness.tools.robot_sdk.RobotSdkTool` (``execute_action``)
@@ -42,6 +46,7 @@ Compare and contrast (do not confuse):
 from __future__ import annotations
 
 import time
+from collections.abc import Collection
 from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -262,12 +267,17 @@ class _RobotSdkVerbTool:
     async def cancel(self, ctx: ToolContext) -> None:
         """Signal the on-robot agent_server to abort and fall back to a safe pose.
 
-        Today: sets the local cancel event only. Later this will additionally
-        POST an ``/abort`` request to the on-robot agent_server so the in-robot
-        mid/tight-loop can unwind to a safe pose before reporting the final
-        :class:`CompletionVerdict` with ``aborted_by="cancel"``.
+        Sets the local cancel event first (so it holds even if the abort round-trip
+        fails), then POSTs ``/abort`` to the robot's agent_server via the adapter so
+        the in-robot mid/tight-loop unwinds to a safe pose and the in-flight verb
+        reports ``aborted_by="cancel"``. When no verb-capable adapter is wired (mock
+        / offline), only the local event is set — there is nothing on-robot to abort.
         """
         ctx.cancel()
+        adapter = self._adapters.get(ctx.robot_id)
+        abort = getattr(adapter, "abort", None)
+        if abort is not None:
+            await abort(trace_id=ctx.trace_id)
 
     # ----- override hooks ---------------------------------------------------
 
@@ -625,13 +635,18 @@ class LocomoteToTool(_RobotSdkVerbTool):
     )
 
     def to_safety_command(self, args: dict[str, Any], ctx: ToolContext) -> EmbodimentCommand | None:
-        goal = args.get("target_pose")
-        if not goal:
+        # SafetyEnvelope checks the goal against the map-frame geofence
+        # (``safety.map_bounds_m``). With no geofence configured the envelope
+        # honestly skips (audit outcome "skipped", never a false "passed") and the
+        # on-robot nav stack (local planning + obstacle avoidance) stays
+        # authoritative either way — the geofence only bounds the goal position.
+        pose = args.get("target_pose")
+        if not pose:
             return None
         return EmbodimentCommand(
             robot_id=args.get("robot_id", ctx.robot_id),
             command_type="locomotion",
-            values=list(goal),
+            values=list(pose),
         )
 
     async def _simulate(self, args: dict[str, Any], ctx: ToolContext) -> CompletionVerdict:
@@ -650,6 +665,33 @@ class LocomoteToTool(_RobotSdkVerbTool):
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
+
+
+def unavailable_verb_tool_names(available_verbs: Collection[str] | None) -> frozenset[str]:
+    """Verb TOOL names to exclude from the Brain's planning vocabulary.
+
+    ``available_verbs`` is the fleet's live allowlist of bare verb names (from
+    ``/health.available_verbs``, see ``AgentServerAdapter.available_verbs``):
+
+    * ``None`` — availability unknown (some backend doesn't advertise): exclude
+      nothing; the call-time ``SupportsVerbs`` / simulated-verdict path stays
+      authoritative. This never removes capability that works today.
+    * otherwise — every verb tool whose bare verb is absent is excluded, so the
+      Brain never plans a verb no robot can currently run. An empty collection
+      (all bridges explicitly down) excludes all verb tools.
+
+    Returns prefixed TOOL names (``robot_sdk.<verb>``) ready to feed to
+    ``ToolRegistry.export_for_brain(exclude_names=...)`` and
+    ``SkillRegistry.export_for_brain(unavailable_tools=...)`` — the filtering
+    happens on tool names BEFORE spec serialization, so no caller needs to know
+    any Brain profile's wire shape.
+    """
+    if available_verbs is None:
+        return frozenset()
+    allowed = set(available_verbs)
+    return frozenset(
+        tool_name for tool_name in VERB_TOOL_NAMES if tool_name.split(".", 1)[1] not in allowed
+    )
 
 
 def build_robot_sdk_verb_tools(
@@ -686,4 +728,5 @@ __all__ = [
     "ReactiveGraspTool",
     "VisualServoToTool",
     "build_robot_sdk_verb_tools",
+    "unavailable_verb_tool_names",
 ]

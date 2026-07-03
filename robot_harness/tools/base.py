@@ -17,7 +17,7 @@ from robot_harness.errors import ToolNotFoundError, ToolSchemaViolationError
 from robot_harness.tools.schema import ToolBackend, ToolSchema
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Collection
 
     from robot_harness.embodiment.base import EmbodimentCommand
     from robot_harness.tools.artifacts import ArtifactStore
@@ -219,15 +219,31 @@ class ToolRegistry:
                 tools = [t for t in tools if pat in t.name.lower()]
         return [t.schema for t in tools]
 
-    def export_for_brain(self, profile: BrainProfile) -> list[BrainToolSpec]:
+    def export_for_brain(
+        self,
+        profile: BrainProfile,
+        *,
+        exclude_names: Collection[str] = (),
+    ) -> list[BrainToolSpec]:
         """Export tool specs in the format expected by the Brain backend.
 
         Only tools with ``brain_visible`` (default True) are exported. A tool
         marked ``brain_visible = False`` stays registered and invocable — skills
         can still reach it via :meth:`get` — but is hidden from the Brain's
         planning vocabulary. See :class:`Tool` for when to hide a tool.
+
+        ``exclude_names`` additionally hides the named tools from THIS export
+        only (session-scoped, e.g. on-robot verbs the fleet does not currently
+        advertise — see ``HarnessContext.unavailable_tool_names``). Unlike
+        ``brain_visible`` it is a per-call filter, not a tool property; excluded
+        tools stay registered and invocable. Filtering happens on tool names
+        before serialization, so it is Brain-profile-agnostic.
         """
-        schemas = [t.schema for t in self._tools.values() if getattr(t, "brain_visible", True)]
+        schemas = [
+            t.schema
+            for t in self._tools.values()
+            if getattr(t, "brain_visible", True) and t.name not in exclude_names
+        ]
         if profile.name in ("openai", "litellm"):
             return [s.to_openai_function() for s in schemas]
         if profile.name == "mcp":

@@ -7,8 +7,9 @@ only holds this thin client. The tight/mid control loops (physics step, joint
 servo) run inside the sim process, never in the harness (ADR-019).
 
 The sim agent_server speaks the same wire contract as a real robot agent_server
-(``/state`` / ``/dispatch`` / ``/camera/{name}`` / ``/safety_check``) plus three
-sim-lifecycle endpoints that hardware does not have:
+(``/state`` / ``/dispatch`` / ``/camera/{name}`` / ``/safety_check`` /
+``/verb/{name}`` / ``/abort`` / ``/health``) plus three sim-lifecycle endpoints
+that hardware does not have:
 
     POST /reset         — reset the simulator to its initial state
     POST /scene         — load a scene description (MJCF / USD path or inline)
@@ -30,10 +31,10 @@ from robot_harness.errors import RobotOfflineError
 class SimAgentServerClient:
     """Thin async HTTP client for an external simulator agent_server.
 
-    Unlike the real-robot ``HttpAgentServerClient`` stub, this client performs
-    real HTTP calls (a reference sim server exists to talk to). Transport errors
-    are translated to ``RobotOfflineError`` so the embodiment layer surfaces a
-    typed, traceable failure instead of a raw ``httpx`` exception.
+    Like the real-robot ``HttpAgentServerClient``, this client performs real HTTP
+    calls (a reference sim server exists to talk to). Transport errors are
+    translated to ``RobotOfflineError`` so the embodiment layer surfaces a typed,
+    traceable failure instead of a raw ``httpx`` exception.
 
     A custom ``transport`` (e.g. ``httpx.MockTransport``) may be injected for
     tests so the real request/response path is exercised without a live server.
@@ -75,14 +76,16 @@ class SimAgentServerClient:
         try:
             resp = await client.get(path)
             resp.raise_for_status()
-        except httpx.HTTPError as exc:
+            data: dict[str, Any] = resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            # ValueError covers json.JSONDecodeError: a 200 with a non-JSON body
+            # is "not speaking the contract", the same typed failure as unreachable.
             raise RobotOfflineError(
                 f"sim agent_server ({self._sim_engine}) unreachable at "
                 f"{self._base_url}{path}: {exc}",
                 robot_id=self._robot_id,
                 module_name="embodiment.interface.sim",
             ) from exc
-        data: dict[str, Any] = resp.json()
         return data
 
     async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -90,14 +93,14 @@ class SimAgentServerClient:
         try:
             resp = await client.post(path, json=payload)
             resp.raise_for_status()
-        except httpx.HTTPError as exc:
+            data: dict[str, Any] = resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
             raise RobotOfflineError(
                 f"sim agent_server ({self._sim_engine}) unreachable at "
                 f"{self._base_url}{path}: {exc}",
                 robot_id=self._robot_id,
                 module_name="embodiment.interface.sim",
             ) from exc
-        data: dict[str, Any] = resp.json()
         return data
 
     # -- shared robot agent_server contract --------------------------------
@@ -132,3 +135,11 @@ class SimAgentServerClient:
         CompletionVerdict-shaped dict.
         """
         return await self._post(f"/verb/{verb}", payload)
+
+    async def abort(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Stop the in-flight action / verb in the sim. POST /abort."""
+        return await self._post("/abort", payload or {})
+
+    async def health(self) -> dict[str, Any]:
+        """Liveness + advertised verbs. GET /health (same contract as real hardware)."""
+        return await self._get("/health")

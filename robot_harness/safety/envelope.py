@@ -10,6 +10,7 @@ from robot_harness.embodiment.base import EmbodimentCommand, SafetyVerdict
 from robot_harness.errors import SafetyEnvelopeViolation
 from robot_harness.observability.tracer import tracer
 from robot_harness.safety.audit_log import AuditEntry, SafetyAuditLog
+from robot_harness.safety.geofence import check_map_geofence
 
 
 class SafetyEnvelope:
@@ -67,6 +68,23 @@ class SafetyEnvelope:
                 if not (bounds[2] <= z <= bounds[5]):
                     violated.append(f"z={z:.3f} out of bounds [{bounds[2]}, {bounds[5]}]")
 
+        # Map-frame geofence for locomotion goals: [xmin, ymin, xmax, ymax].
+        # No geofence configured → honest skip (audit outcome "skipped"): recording
+        # "passed" for a command no rule inspected would be a false gate, and the
+        # on-robot nav stack stays authoritative.
+        if cmd.command_type == "locomotion":
+            map_bounds = self._cfg.map_bounds_m
+            if len(map_bounds) == 4:
+                violated.extend(check_map_geofence(cmd, map_bounds))
+            else:
+                return self._skip_unchecked(
+                    cmd,
+                    trace_id,
+                    subtask_id,
+                    reason="no map geofence configured — locomotion goal unchecked, "
+                    "on-robot nav stack is authoritative",
+                )
+
         if violated:
             self._write_audit(cmd, trace_id, subtask_id, violated)
             raise SafetyEnvelopeViolation(
@@ -93,6 +111,32 @@ class SafetyEnvelope:
             )
         )
         return SafetyVerdict(passed=True)
+
+    def _skip_unchecked(
+        self,
+        cmd: EmbodimentCommand,
+        trace_id: str,
+        subtask_id: str,
+        reason: str,
+    ) -> SafetyVerdict:
+        """Record that no configured rule could check *cmd* — NOT a "passed"."""
+        tracer.event(
+            "safety.skipped",
+            trace_id=trace_id,
+            robot_id=cmd.robot_id,
+            command_type=cmd.command_type,
+            warning=reason,
+        )
+        self._audit.record(
+            AuditEntry(
+                trace_id=trace_id,
+                robot_id=cmd.robot_id,
+                subtask_id=subtask_id,
+                command_type=cmd.command_type,
+                outcome="skipped",
+            )
+        )
+        return SafetyVerdict(passed=True, reason=reason)
 
     def _write_audit(
         self,

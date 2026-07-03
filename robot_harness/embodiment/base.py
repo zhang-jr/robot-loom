@@ -33,8 +33,11 @@ What the harness MUST NOT do via this Protocol:
       (see robot_harness/tools/robot_sdk/, e.g. reactive_grasp / visual_servo_to)
     • assume dispatch() is synchronous to motion completion — it returns a handle
 
-Implementations live in embodiment/{arm,humanoid,quadruped,mobile}/ and only
-translate the unified EmbodimentCommand into the per-robot agent_server's
+Implementations are morphology-agnostic wire clients split by transport, not by
+robot_type (ADR-027): real hardware lives in embodiment/real/ (e.g. the HTTP
+agent_server client) and simulators in embodiment/sim/, both sharing the
+AgentServerAdapter base. robot_type is a parameter, never a subclass. An adapter
+only translates the unified EmbodimentCommand into the per-robot agent_server's
 wire format. Hardware-specific control logic does NOT belong here.
 """
 
@@ -91,7 +94,8 @@ class EmbodimentCommand(BaseModel):
       - joint      : [pos_0, pos_1, ..., pos_N]  (radians, N = DOF)
       - cartesian  : [x, y, z, ...]  (meters; orientation repr is adapter-specific)
       - delta      : [dx, dy, dz, ...] (meters/radians, same length as cartesian)
-      - locomotion : adapter-specific; no safety-layer interpretation yet
+      - locomotion : [x, y] or [x, y, yaw]  (map frame, meters/radians; goal pose,
+                     checked against the map geofence when safety.map_bounds_m is set)
       - hand_grasp : [width_or_ratio]  (0=open, 1=closed; extra for force params)
     """
 
@@ -142,7 +146,10 @@ class EmbodimentAdapter(Protocol):
       • get_state() / get_camera_frame() are low-frequency sampling endpoints
         for brain reasoning; high-rate streaming belongs in a separate channel.
 
-    Implementations live in embodiment/{arm,humanoid,quadruped,mobile}/.
+    Implementations are split by transport, not morphology (ADR-027):
+    embodiment/real/ for hardware agent_server clients, embodiment/sim/ for
+    simulators — both share the AgentServerAdapter base and take robot_type as a
+    parameter rather than encoding it per subclass.
     """
 
     robot_id: str
@@ -172,6 +179,12 @@ class SupportsVerbs(Protocol):
 
     Owned by the embodiment layer so the dependency points downward:
     ``tools/robot_sdk`` imports this to gate dispatch, not the other way around.
+
+    ``available_verbs`` is the discovery half of the capability: which verbs the
+    backend *currently* advertises (live from ``/health``, ADR-019). ``None``
+    means the backend does not advertise a verb set (unknown — never prune);
+    ``[]`` means it explicitly advertises zero verbs right now.
     """
 
     async def call_verb(self, verb: str, payload: dict[str, Any]) -> dict[str, Any]: ...
+    async def available_verbs(self) -> list[str] | None: ...

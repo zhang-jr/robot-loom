@@ -30,6 +30,7 @@ from robot_harness.tools.robot_sdk import (
     ReactiveGraspTool,
     VisualServoToTool,
     build_robot_sdk_verb_tools,
+    unavailable_verb_tool_names,
 )
 
 
@@ -67,6 +68,36 @@ def test_verb_classes_use_native_backend() -> None:
     """Verbs run native (in-process) until the on-robot agent_server HTTP/WS transport lands."""
     for tool in build_robot_sdk_verb_tools():
         assert tool.backend == "native"
+
+
+# ---------------------------------------------------------------------------
+# unavailable_verb_tool_names — live-capability exclusion set (ADR-019)
+# ---------------------------------------------------------------------------
+
+
+def test_unavailable_verbs_none_means_unknown_excludes_nothing() -> None:
+    """Backend doesn't advertise a verb set (mock / sim / old server) → never prune."""
+    assert unavailable_verb_tool_names(None) == frozenset()
+
+
+def test_unavailable_verbs_excludes_unadvertised_only() -> None:
+    # Go2 with no arm bridge advertises only locomotion + home.
+    excluded = unavailable_verb_tool_names({"locomote_to", "home"})
+    assert excluded == {
+        ROBOT_SDK_REACTIVE_GRASP,
+        ROBOT_SDK_VISUAL_SERVO_TO,
+        ROBOT_SDK_MOVE_TO_POSE,
+    }
+
+
+def test_unavailable_verbs_explicit_empty_excludes_all() -> None:
+    """[] is a real answer — every capability bridge down → all verb tools gated."""
+    assert unavailable_verb_tool_names(set()) == frozenset(VERB_TOOL_NAMES)
+
+
+def test_unavailable_verbs_full_allowlist_excludes_nothing() -> None:
+    bare = {name.split(".", 1)[1] for name in VERB_TOOL_NAMES}
+    assert unavailable_verb_tool_names(bare) == frozenset()
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +252,54 @@ async def test_tool_cancel_sets_context_cancel_flag() -> None:
     assert ctx.is_cancelled is False
     await tool.cancel(ctx)
     assert ctx.is_cancelled is True
+
+
+@pytest.mark.asyncio
+async def test_cancel_routes_abort_to_adapter() -> None:
+    """With a verb-capable adapter wired, cancel() POSTs /abort via adapter.abort()
+    (not just flips the local flag) so an in-flight on-robot verb unwinds."""
+
+    class _FakeAdapter:
+        def __init__(self) -> None:
+            self.aborted_with: str | None = None
+
+        async def abort(self, trace_id: str = "") -> dict[str, object]:
+            self.aborted_with = trace_id
+            return {"aborted": True}
+
+    adapter = _FakeAdapter()
+    tool = ReactiveGraspTool({"robot-0": adapter})
+    ctx = _ctx()
+    await tool.cancel(ctx)
+    assert ctx.is_cancelled is True
+    assert adapter.aborted_with == ctx.trace_id
+
+
+@pytest.mark.asyncio
+async def test_cancel_without_adapter_only_sets_local_flag() -> None:
+    """No verb-capable adapter (mock/offline) -> nothing on-robot to abort; cancel
+    must still succeed and set the local flag."""
+    tool = ReactiveGraspTool()  # no adapters
+    ctx = _ctx()
+    await tool.cancel(ctx)  # must not raise
+    assert ctx.is_cancelled is True
+
+
+def test_locomote_to_emits_locomotion_safety_command() -> None:
+    """The goal pose is exposed to SafetyEnvelope as a locomotion command so the
+    map-frame geofence (safety.map_bounds_m) can bound it pre-dispatch."""
+    tool = LocomoteToTool()
+    cmd = tool.to_safety_command({"robot_id": "robot-0", "target_pose": [1.0, 2.0, 0.0]}, _ctx())
+    assert cmd is not None
+    assert cmd.command_type == "locomotion"
+    assert cmd.robot_id == "robot-0"
+    assert cmd.values == [1.0, 2.0, 0.0]
+
+
+def test_locomote_to_without_target_emits_no_safety_command() -> None:
+    tool = LocomoteToTool()
+    cmd = tool.to_safety_command({"robot_id": "robot-0"}, _ctx())
+    assert cmd is None
 
 
 # ---------------------------------------------------------------------------

@@ -55,6 +55,11 @@ safety:
   enabled: true
   max_joint_velocity_rad_s: 1.0
   workspace_bounds_m: [-2.0, -2.0, 0.0, 2.0, 2.0, 2.0]   # [xmin ymin zmin xmax ymax zmax]
+  # Map-frame geofence for locomotion goals: [xmin ymin xmax ymax] (meters).
+  # Omit / leave empty when the site is unmapped — locomotion goals are then
+  # recorded as "skipped" in the safety audit and the on-robot nav stack is
+  # authoritative. Set it as soon as you have a map.
+  # map_bounds_m: [-10.0, -10.0, 10.0, 10.0]
 
 # ---------------------------------------------------------------------------
 # Memory backend.

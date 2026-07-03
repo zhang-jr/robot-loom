@@ -52,6 +52,12 @@ class SafetyConfig(BaseModel):
     workspace_bounds_m: list[float] = Field(
         default_factory=lambda: [-2.0, -2.0, 0.0, 2.0, 2.0, 2.0]
     )
+    # Map-frame geofence for locomotion goals: [xmin, ymin, xmax, ymax] in meters.
+    # Empty (the default) = no geofence — SafetyEnvelope honestly skips locomotion
+    # goals (audit outcome "skipped", never a false "passed") and the on-robot nav
+    # stack stays authoritative. There is no safe universal default: map-frame
+    # bounds only mean something for a mapped site.
+    map_bounds_m: list[float] = Field(default_factory=list)
 
 
 class MemoryConfig(BaseModel):
