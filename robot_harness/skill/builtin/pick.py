@@ -23,12 +23,33 @@ class PickSkill:
 
     manifest = SkillManifest(
         name="pick",
-        version="0.3.0",
+        version="0.4.0",
         description="Pick a named object from the workspace",
         embodiment_compat=["arm", "humanoid"],
         safety_class=SafetyClass.HIGH,
         required_tools=[ROBOT_SDK_REACTIVE_GRASP],
         tags=["manipulation", "pick"],
+        data_schema={
+            "type": "object",
+            "properties": {
+                "robot_id": {"type": "string", "description": "Robot that picks the object."},
+                "description": {"type": "string"},
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "object_name": {
+                            "type": "string",
+                            "description": (
+                                "Name/phrase of the object to grasp, e.g. 'red mug'. "
+                                "Grounded by the on-robot perception stack."
+                            ),
+                        }
+                    },
+                    "required": ["object_name"],
+                },
+            },
+            "required": ["robot_id", "parameters"],
+        },
     )
 
     async def execute(
@@ -38,7 +59,13 @@ class PickSkill:
         ctx: Any,
     ) -> SkillResult:
         robot_id = subtask.robot_id
-        object_name = subtask.parameters.get("object_name", "object")
+        # An actuation-target parameter must never have a default: a fallback
+        # phrase like "object" grounds to an arbitrary scene item and the robot
+        # grasps whatever matched. Missing target is a failed subtask the Brain
+        # can correct, never a guess.
+        object_name = subtask.parameters.get("object_name")
+        if not object_name:
+            return _fail(subtask, "missing required parameter 'object_name' (grasp target phrase)")
         tool_ctx = ToolContext.create(robot_id, subtask_id=subtask.subtask_id)
 
         grasp = await tools.get(ROBOT_SDK_REACTIVE_GRASP).invoke(
@@ -52,7 +79,7 @@ class PickSkill:
         if grasp.success:
             result = SkillResult(
                 skill_name="pick",
-                skill_version="0.3.0",
+                skill_version=self.manifest.version,
                 subtask_id=subtask.subtask_id,
                 success=True,
                 outcome="success",
@@ -71,7 +98,7 @@ class PickSkill:
 def _fail(subtask: Subtask, message: str) -> SkillResult:
     return SkillResult(
         skill_name="pick",
-        skill_version="0.3.0",
+        skill_version=PickSkill.manifest.version,
         subtask_id=subtask.subtask_id,
         success=False,
         message=message,

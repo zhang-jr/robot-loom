@@ -388,6 +388,30 @@ async def test_motion_skills_fail_on_missing_target_pose() -> None:
         assert "target_pose" in result.message
 
 
+@pytest.mark.asyncio
+async def test_pick_fails_on_missing_object_name() -> None:
+    """An actuation-target parameter must not default: a fallback phrase like
+    'object' grounds to an arbitrary scene item and the robot grasps whatever
+    matched. Missing target = failed subtask, before any tool call."""
+    from robot_harness.skill.builtin.pick import PickSkill
+
+    registry = ToolRegistry()  # empty: the skill must fail BEFORE any tool call
+    subtask = Subtask(subtask_id="s1", description="pick it up", robot_id="r0", parameters={})
+    result = await PickSkill().execute(subtask, registry, ctx=None)
+    assert result.success is False
+    assert "object_name" in result.message
+
+
+def test_pick_schema_requires_object_name() -> None:
+    from robot_harness.skill.builtin.pick import PickSkill
+
+    reg = SkillRegistry()
+    reg.register(PickSkill())
+    (spec,) = reg.export_for_brain(BrainProfile(name="openai"))
+    params = spec["function"]["parameters"]
+    assert params["properties"]["parameters"]["required"] == ["object_name"]
+
+
 def test_motion_skill_schema_requires_target_pose() -> None:
     """The Brain-facing schema declares target_pose required inside the envelope."""
     from robot_harness.skill.builtin.place import PlaceSkill
