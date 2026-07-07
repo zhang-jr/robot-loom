@@ -18,6 +18,13 @@ if TYPE_CHECKING:
     from robot_harness.runtime.harness_context import HarnessContext
     from robot_harness.tools.base import ToolRegistry
 
+# The Brain-facing input shape every skill call is unpacked with. A custom
+# ``data_schema`` must keep this envelope: the export side hands the schema to
+# the Brain verbatim, while dispatch unconditionally reads these three keys —
+# a flat schema would make the Brain pass flat args that dispatch silently
+# drops. Skill-specific fields belong inside ``parameters``.
+SUBTASK_ENVELOPE_KEYS = frozenset({"robot_id", "description", "parameters"})
+
 
 class SkillManifest(BaseModel):
     """Versioned descriptor for a Skill — required at registration time."""
@@ -49,6 +56,25 @@ class SkillManifest(BaseModel):
     def _name_not_empty(cls, v: str) -> str:
         if not v.strip():
             raise ValueError("Skill name must not be empty")
+        return v
+
+    @field_validator("data_schema")
+    @classmethod
+    def _data_schema_keeps_subtask_envelope(cls, v: dict[str, Any]) -> dict[str, Any]:
+        if not v:
+            return v
+        if v.get("type") != "object":
+            raise ValueError(
+                "data_schema must be an object-typed JSON Schema (it is exported "
+                "verbatim as the Brain-facing input schema)"
+            )
+        extra = set(v.get("properties", {})) - SUBTASK_ENVELOPE_KEYS
+        if extra:
+            raise ValueError(
+                "data_schema top-level properties must stay within the Subtask "
+                f"envelope {sorted(SUBTASK_ENVELOPE_KEYS)}; skill-specific fields "
+                f"go inside 'parameters'. Offending: {sorted(extra)}"
+            )
         return v
 
 
@@ -97,11 +123,13 @@ class Skill(Protocol):
     - Must ONLY call tools via ``tools.get(name).invoke(...)``.
     - Must NOT directly import or call external server SDKs.
     - rollback() must restore pre-execution state if feasible.
+
+    Skill selection is the Brain's job: skills enter its planning vocabulary as
+    ``skill.<name>`` callables (SkillRegistry.export_for_brain) and are invoked
+    by name — there is no keyword-routing entry point.
     """
 
     manifest: SkillManifest
-
-    async def can_handle(self, subtask: Subtask, ctx: HarnessContext) -> bool: ...
 
     async def execute(
         self,

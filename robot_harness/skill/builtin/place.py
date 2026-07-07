@@ -20,17 +20,34 @@ class PlaceSkill:
 
     manifest = SkillManifest(
         name="place",
-        version="0.2.0",
+        version="0.3.0",
         description="Place a held object at the specified target location",
         embodiment_compat=["arm", "humanoid"],
         safety_class=SafetyClass.HIGH,
         required_tools=[ROBOT_SDK_MOVE_TO_POSE, "robot_sdk.execute_action"],
         tags=["manipulation", "place"],
+        data_schema={
+            "type": "object",
+            "properties": {
+                "robot_id": {"type": "string", "description": "Robot that places the object."},
+                "description": {"type": "string"},
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "target_pose": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "minItems": 6,
+                            "maxItems": 6,
+                            "description": "Target pose [x, y, z, rx, ry, rz] in meters/radians.",
+                        }
+                    },
+                    "required": ["target_pose"],
+                },
+            },
+            "required": ["robot_id", "parameters"],
+        },
     )
-
-    async def can_handle(self, subtask: Subtask, ctx: Any) -> bool:
-        kw = subtask.description.lower()
-        return "place" in kw or "put" in kw or "release" in kw or "drop" in kw
 
     async def execute(
         self,
@@ -39,9 +56,11 @@ class PlaceSkill:
         ctx: Any,
     ) -> SkillResult:
         robot_id = subtask.robot_id
-        target_pose: list[float] = subtask.parameters.get(
-            "target_pose", [0.5, 0.2, 0.1, 0.0, 0.0, 0.0]
-        )
+        # A motion skill must never fall back to a made-up pose: a missing
+        # parameter is a failed subtask the Brain can correct, not a default move.
+        target_pose: list[float] | None = subtask.parameters.get("target_pose")
+        if not target_pose:
+            return _fail(subtask, "missing required parameter 'target_pose' [x, y, z, rx, ry, rz]")
 
         tool_ctx = ToolContext.create(robot_id, subtask_id=subtask.subtask_id)
 
@@ -67,7 +86,7 @@ class PlaceSkill:
         if release.success:
             return SkillResult(
                 skill_name="place",
-                skill_version="0.2.0",
+                skill_version=self.manifest.version,
                 subtask_id=subtask.subtask_id,
                 success=True,
                 outcome="success",
@@ -82,7 +101,7 @@ class PlaceSkill:
 def _fail(subtask: Subtask, message: str) -> SkillResult:
     return SkillResult(
         skill_name="place",
-        skill_version="0.2.0",
+        skill_version=PlaceSkill.manifest.version,
         subtask_id=subtask.subtask_id,
         success=False,
         message=message,

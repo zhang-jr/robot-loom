@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Collection
 from typing import Any
 
@@ -151,10 +150,10 @@ class SkillRegistry:
 
     def _brain_schema(self, manifest: SkillManifest) -> ToolSchema:
         """Build the Brain-facing tool schema for one skill from its manifest."""
-        data_schema = manifest.data_schema
-        input_schema = (
-            data_schema if data_schema.get("type") == "object" else _GENERIC_SUBTASK_INPUT_SCHEMA
-        )
+        # A declared data_schema is envelope-shaped by manifest validation, so
+        # dispatch (which unpacks the Subtask envelope) always matches the shape
+        # the Brain was told to use.
+        input_schema = manifest.data_schema or _GENERIC_SUBTASK_INPUT_SCHEMA
         compat = ", ".join(manifest.embodiment_compat) or "any"
         description = (
             f"{manifest.description or manifest.name} "
@@ -229,17 +228,6 @@ class SkillRegistry:
         if not versions:
             return None
         return versions.get(self._active.get(skill_name, ""))
-
-    def route(self, subtask_description: str, ctx: Any) -> Skill | None:
-        """Simple tag/keyword-based routing; returns None if no match."""
-        desc_lower = subtask_description.lower()
-        for name in list(self._active):
-            skill = self._store[name].get(self._active[name])
-            if skill and any(
-                re.search(rf"\b{re.escape(tag)}\b", desc_lower) for tag in skill.manifest.tags
-            ):
-                return skill
-        return None
 
     def __len__(self) -> int:
         return len(self._store)

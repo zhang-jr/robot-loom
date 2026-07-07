@@ -31,10 +31,6 @@ class PickSkill:
         tags=["manipulation", "pick"],
     )
 
-    async def can_handle(self, subtask: Subtask, ctx: Any) -> bool:
-        kw = subtask.description.lower()
-        return "pick" in kw or "grasp" in kw or "grab" in kw
-
     async def execute(
         self,
         subtask: Subtask,
