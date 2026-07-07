@@ -112,6 +112,40 @@ class SafetyEnvelope:
         )
         return SafetyVerdict(passed=True)
 
+    def note_skipped(
+        self,
+        *,
+        tool_name: str,
+        robot_id: str,
+        trace_id: str = "",
+        subtask_id: str = "",
+        reason: str,
+    ) -> None:
+        """Audit a hardware-bound dispatch that produced no checkable command.
+
+        Called by the dispatch gates when a hardware-bound tool's safety-command
+        extraction returns None (e.g. ``reactive_grasp`` given only a phrase
+        hint — the on-robot reflex is authoritative). The envelope never ran, and
+        that fact must be auditable: without this entry, "checked and passed"
+        and "never checked" would be indistinguishable after the fact.
+        """
+        tracer.event(
+            "safety.skipped",
+            trace_id=trace_id,
+            robot_id=robot_id,
+            tool_name=tool_name,
+            warning=reason,
+        )
+        self._audit.record(
+            AuditEntry(
+                trace_id=trace_id,
+                robot_id=robot_id,
+                subtask_id=subtask_id,
+                tool_name=tool_name,
+                outcome="skipped",
+            )
+        )
+
     def _skip_unchecked(
         self,
         cmd: EmbodimentCommand,

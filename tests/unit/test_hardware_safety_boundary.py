@@ -7,16 +7,21 @@ capability tools stay ungated.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from robot_harness.config.schema import SafetyConfig
 from robot_harness.errors import SafetyEnvelopeViolation
+from robot_harness.runtime.skill_tools import SafetyGatedToolRegistry
+from robot_harness.safety.audit_log import SafetyAuditLog
 from robot_harness.safety.envelope import SafetyEnvelope
 from robot_harness.tools.base import ToolContext, ToolRegistry
 from robot_harness.tools.generic.shell import ShellTool
 from robot_harness.tools.robot_sdk.http_adapter import RobotSdkTool
 from robot_harness.tools.robot_sdk.verbs import (
     ROBOT_SDK_MOVE_TO_POSE,
+    ROBOT_SDK_REACTIVE_GRASP,
     VERB_TOOL_NAMES,
     build_robot_sdk_verb_tools,
 )
@@ -85,3 +90,26 @@ async def test_verb_in_bounds_pose_passes() -> None:
     assert cmd is not None
     verdict = await env.check(cmd, trace_id="t", subtask_id="s")
     assert verdict.passed
+
+
+@pytest.mark.asyncio
+async def test_unchecked_hardware_dispatch_is_audited_as_skipped(tmp_path: Path) -> None:
+    """reactive_grasp given only a phrase hint yields no harness-checkable
+    command (the on-robot reflex is authoritative); the gate must record an
+    honest "skipped" audit entry — never indistinguishable from "checked and
+    passed", and never silent."""
+    reg = _registry()
+    audit = SafetyAuditLog(tmp_path / "audit.jsonl")
+    env = SafetyEnvelope(SafetyConfig(), audit_log=audit)
+    gated = SafetyGatedToolRegistry(reg, env)
+
+    ctx = ToolContext.create(robot_id="robot-0")
+    res = await gated.get(ROBOT_SDK_REACTIVE_GRASP).invoke(
+        {"robot_id": "robot-0", "target_hint": {"kind": "phrase", "phrase": "red cup"}},
+        ctx,
+    )
+    assert res.success
+    (entry,) = audit.tail()
+    assert entry.outcome == "skipped"
+    assert entry.tool_name == ROBOT_SDK_REACTIVE_GRASP
+    assert entry.robot_id == "robot-0"
