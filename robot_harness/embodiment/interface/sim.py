@@ -25,7 +25,8 @@ from typing import Any
 
 import httpx
 
-from robot_harness.errors import RobotOfflineError
+from robot_harness.embodiment.interface.http import verb_read_timeout_s
+from robot_harness.errors import ActionDispatchTimeoutError, RobotOfflineError
 
 
 class SimAgentServerClient:
@@ -132,9 +133,42 @@ class SimAgentServerClient:
         """Invoke an on-robot mid-loop verb (ADR-019). POST /verb/{verb}.
 
         The sim runs the verb's perception-action loop internally and returns a
-        CompletionVerdict-shaped dict.
+        CompletionVerdict-shaped dict. Same deadline semantics as the real
+        client (ISS-030): the read timeout follows ``constraints.timeout_s``,
+        and a read timeout aborts the in-flight verb before raising a typed
+        ActionDispatchTimeoutError.
         """
-        return await self._post(f"/verb/{verb}", payload)
+        path = f"/verb/{verb}"
+        read_timeout = verb_read_timeout_s(payload)
+        client = self._ensure_client()
+        try:
+            resp = await client.post(
+                path,
+                json=payload,
+                timeout=httpx.Timeout(self._timeout_s, read=read_timeout),
+            )
+            resp.raise_for_status()
+            data: dict[str, Any] = resp.json()
+        except httpx.ReadTimeout as exc:
+            abort_note = "abort delivered"
+            try:
+                await self.abort({"reason": f"harness verb timeout: {verb}"})
+            except RobotOfflineError:
+                abort_note = "abort delivery failed"
+            raise ActionDispatchTimeoutError(
+                f"verb '{verb}' did not complete within {read_timeout:.1f}s at "
+                f"{self._base_url}{path} ({abort_note})",
+                robot_id=self._robot_id,
+                module_name="embodiment.interface.sim",
+            ) from exc
+        except (httpx.HTTPError, ValueError) as exc:
+            raise RobotOfflineError(
+                f"sim agent_server ({self._sim_engine}) unreachable at "
+                f"{self._base_url}{path}: {exc}",
+                robot_id=self._robot_id,
+                module_name="embodiment.interface.sim",
+            ) from exc
+        return data
 
     async def abort(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         """Stop the in-flight action / verb in the sim. POST /abort."""

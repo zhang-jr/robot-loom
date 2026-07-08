@@ -27,6 +27,8 @@ from __future__ import annotations
 import uuid
 from typing import Any, Protocol
 
+from pydantic import ValidationError
+
 from robot_harness.embodiment.base import (
     DispatchHandle,
     EmbodimentCommand,
@@ -35,6 +37,7 @@ from robot_harness.embodiment.base import (
     RobotType,
     SafetyVerdict,
 )
+from robot_harness.errors import RobotOfflineError
 
 
 class AgentServerClient(Protocol):
@@ -79,11 +82,17 @@ class AgentServerAdapter:
 
     async def get_camera_frame(self, camera: str) -> Frame:
         raw = await self._client.get_camera_frame(camera)
-        return Frame(**raw)
+        try:
+            return Frame(**raw)
+        except (ValidationError, TypeError) as exc:
+            raise self._malformed(f"camera frame ('{camera}')", exc) from exc
 
     async def get_state(self) -> RobotState:
         raw = await self._client.get_state()
-        return self._to_state(raw)
+        try:
+            return self._to_state(raw)
+        except (ValidationError, TypeError, ValueError) as exc:
+            raise self._malformed("robot state", exc) from exc
 
     async def dispatch(self, cmd: EmbodimentCommand) -> DispatchHandle:
         raw = await self._client.dispatch(cmd.model_dump())
@@ -95,10 +104,20 @@ class AgentServerAdapter:
 
     async def safety_check(self, cmd: EmbodimentCommand) -> SafetyVerdict:
         raw = await self._client.safety_check(cmd.model_dump())
+        passed = raw.get("passed")
+        if not isinstance(passed, bool):
+            # Fail closed: this check is part of the mandatory pre-dispatch gate
+            # (SafetyEnvelope pass 2), so a response without a boolean verdict is
+            # a refusal, never a default pass.
+            return SafetyVerdict(
+                passed=False,
+                reason=f"malformed safety_check response: {raw!r}",
+                violated_rules=["malformed safety_check response"],
+            )
         return SafetyVerdict(
-            passed=raw.get("passed", True),
-            reason=raw.get("reason", ""),
-            violated_rules=raw.get("violated_rules", []),
+            passed=passed,
+            reason=str(raw.get("reason", "")),
+            violated_rules=[str(r) for r in (raw.get("violated_rules") or [])],
         )
 
     # -- SupportsVerbs capability ------------------------------------------
@@ -156,6 +175,16 @@ class AgentServerAdapter:
         await self._client.aclose()
 
     # -- helpers -----------------------------------------------------------
+
+    def _malformed(self, what: str, exc: Exception) -> RobotOfflineError:
+        """A payload that cannot be parsed is "not speaking the contract" — the
+        same typed failure as unreachable (wire-client precedent), never a raw
+        ValidationError escaping into the planning loop (ISS-034)."""
+        return RobotOfflineError(
+            f"agent_server returned malformed {what}: {exc}",
+            robot_id=self.robot_id,
+            module_name="embodiment.agent_server_base",
+        )
 
     def _to_state(self, raw: dict[str, Any]) -> RobotState:
         return RobotState(
