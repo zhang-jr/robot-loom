@@ -370,3 +370,282 @@ async def test_unknown_tool_returns_error_result() -> None:
     # Should not crash — error result is recorded and loop continues
     assert result.outcome == "success"
     assert any(r.get("success") is False for r in result.tool_results)
+
+
+# ---------------------------------------------------------------------------
+# Critic supervision is best-effort: frame-fetch failures degrade (ISS-031)
+# ---------------------------------------------------------------------------
+
+
+class _NeverCalledCritic:
+    """Critic that fails the test if judge() is ever reached."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def judge(self, current: Any, reference: Any, task_description: str) -> Any:
+        self.calls += 1
+        raise AssertionError("critic must not run when the frame fetch failed")
+
+
+@pytest.mark.asyncio
+async def test_critic_frame_fetch_failure_skips_supervision_not_task() -> None:
+    """A camera fetch failure (robot offline / camera 404) must skip the critic
+    round — turn runs unsupervised — never crash the task (ISS-031)."""
+    from robot_harness.brain.base import ToolCallRequest
+    from robot_harness.errors import RobotOfflineError
+
+    decisions = [
+        BrainDecision(
+            decision_type="tool_call",
+            tool_calls=[ToolCallRequest(tool_name="mock_tool", args={})],
+        ),
+        BrainDecision(decision_type="plan", message="done"),
+    ]
+    ctx = _make_ctx()
+    ctx.tool_registry.register(_MockTool())
+
+    async def _broken_camera(robot_id: str, camera: str = "") -> Any:
+        raise RobotOfflineError("camera endpoint 404", robot_id=robot_id)
+
+    ctx.get_camera_frame = _broken_camera  # type: ignore[method-assign]
+    critic = _NeverCalledCritic()
+    loop = AgentLoop(_MockBrain(decisions), ctx, max_turns=5, critic=critic, critic_interval=1)
+    result = await loop.run(_make_task())
+    assert result.outcome == "success"
+    assert critic.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_camera_frame_resolves_declared_camera_from_config() -> None:
+    """The critic path must ask for a camera the fleet config actually declares,
+    not a hard-coded name (ISS-031)."""
+    from robot_harness.config.schema import EmbodimentBackendConfig, HarnessConfig
+    from robot_harness.embodiment.base import Frame
+
+    class _RecordingCameraAdapter:
+        robot_id = "r0"
+        robot_type = "arm"
+
+        def __init__(self) -> None:
+            self.requested: list[str] = []
+
+        async def get_camera_frame(self, camera: str) -> Frame:
+            self.requested.append(camera)
+            return Frame(camera=camera, robot_id="r0")
+
+    cfg = HarnessConfig(
+        robot_ids=["r0"],
+        embodiments={"r0": EmbodimentBackendConfig(cameras=["head_cam"])},
+    )
+    ctx = HarnessContext.build(config=cfg)
+    adapter = _RecordingCameraAdapter()
+    ctx.embodiment_adapters["r0"] = adapter  # type: ignore[assignment]
+
+    await ctx.get_camera_frame("r0")
+    assert adapter.requested == ["head_cam"]
+
+    # An explicit camera argument still wins over the declared default.
+    await ctx.get_camera_frame("r0", camera="wrist_camera")
+    assert adapter.requested == ["head_cam", "wrist_camera"]
+
+
+# ---------------------------------------------------------------------------
+# Failed tool results keep their structured output in the conversation (ISS-032)
+# ---------------------------------------------------------------------------
+
+
+def test_tool_message_failure_carries_stripped_output() -> None:
+    """A failed/partial result's evidence must reach the Brain; only blobs are
+    stripped — never the structured facts (ISS-032)."""
+    import json
+
+    loop = AgentLoop(_MockBrain([]), _make_ctx())
+    msg = loop._tool_message(
+        "call_1",
+        {
+            "success": False,
+            "error": "robot_sdk.reactive_grasp outcome=partial (aborted_by=timeout): slipped",
+            "error_type": "VerbFailed",
+            "output": {
+                "outcome": "partial",
+                "evidence": "slipped",
+                "aborted_by": "timeout",
+                "image_b64": "SHOULD-NOT-LEAK",
+            },
+        },
+    )
+    payload = json.loads(msg["content"])
+    assert payload["error_type"] == "VerbFailed"
+    assert payload["output"]["evidence"] == "slipped"
+    assert "image_b64" not in payload["output"]
+    assert "SHOULD-NOT-LEAK" not in msg["content"]
+
+
+# ---------------------------------------------------------------------------
+# Untyped exceptions are normalized, never crash the task (ISS-034)
+# ---------------------------------------------------------------------------
+
+
+class _BuggyTool:
+    name = "buggy_tool"
+    backend: ToolBackend = "native"
+    is_idempotent = True
+    is_cancellable = False
+    schema = ToolSchema(
+        name="buggy_tool",
+        description="Raises an untyped exception",
+        input_schema={"type": "object", "properties": {}},
+    )
+
+    async def invoke(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        raise KeyError("tool bug")
+
+    async def cancel(self, ctx: ToolContext) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_untyped_tool_exception_becomes_failed_result() -> None:
+    """A tool bug (or unparsed external payload) must become a failed result
+    the Brain replans on — not ride the safety-violation path and crash the
+    task without an episode (ISS-034)."""
+    from robot_harness.brain.base import ToolCallRequest
+
+    decisions = [
+        BrainDecision(
+            decision_type="tool_call",
+            tool_calls=[ToolCallRequest(tool_name="buggy_tool", args={})],
+        ),
+        BrainDecision(decision_type="plan", message="recovered"),
+    ]
+    ctx = _make_ctx()
+    ctx.tool_registry.register(_BuggyTool())
+    loop = AgentLoop(_MockBrain(decisions), ctx, max_turns=5)
+    result = await loop.run(_make_task())
+    assert result.outcome == "success"
+    assert result.tool_results[0]["success"] is False
+    assert result.tool_results[0]["error_type"] == "KeyError"
+
+
+@pytest.mark.asyncio
+async def test_untyped_skill_exception_becomes_failed_result() -> None:
+    """Same for a bug in a (user-provided) skill reached via skill.<name>."""
+    from robot_harness.brain.base import ToolCallRequest
+    from robot_harness.skill.base import SkillManifest
+
+    class _BoomSkill:
+        manifest = SkillManifest(name="boom", version="0.0.1")
+
+        async def execute(self, subtask: Any, tools: Any, ctx: Any) -> Any:
+            raise RuntimeError("skill bug")
+
+        async def rollback(self, ctx: Any) -> None:
+            pass
+
+    decisions = [
+        BrainDecision(
+            decision_type="tool_call",
+            tool_calls=[ToolCallRequest(tool_name="skill.boom", args={"robot_id": "r0"})],
+        ),
+        BrainDecision(decision_type="plan", message="recovered"),
+    ]
+    ctx = _make_ctx()
+    ctx.skill_registry.register(_BoomSkill())
+    loop = AgentLoop(_MockBrain(decisions), ctx, max_turns=5)
+    result = await loop.run(_make_task())
+    assert result.outcome == "success"
+    assert result.tool_results[0]["success"] is False
+    assert result.tool_results[0]["error_type"] == "RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_missing_required_args_fail_before_dispatch() -> None:
+    """Brain args violating the tool's input schema are refused at the loop
+    gate as a typed failed result — not a KeyError deep inside the tool."""
+    from robot_harness.brain.base import ToolCallRequest
+
+    class _StrictTool(_MockTool):
+        name = "strict_tool"
+        schema = ToolSchema(
+            name="strict_tool",
+            description="Requires foo",
+            input_schema={
+                "type": "object",
+                "properties": {"foo": {"type": "string"}},
+                "required": ["foo"],
+            },
+        )
+
+    strict = _StrictTool()
+    decisions = [
+        BrainDecision(
+            decision_type="tool_call",
+            tool_calls=[ToolCallRequest(tool_name="strict_tool", args={})],
+        ),
+        BrainDecision(decision_type="plan", message="done"),
+    ]
+    ctx = _make_ctx()
+    ctx.tool_registry.register(strict)
+    loop = AgentLoop(_MockBrain(decisions), ctx, max_turns=5)
+    result = await loop.run(_make_task())
+    assert result.tool_results[0]["success"] is False
+    assert result.tool_results[0]["error_type"] == "ToolSchemaViolationError"
+    assert strict.invoke_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Loop backstop deadline for hung tools (ISS-037)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_hung_tool_hits_loop_backstop_deadline() -> None:
+    """ctx.timeout_s is advisory; the loop's wait_for backstop must convert a
+    hung tool into a failed ToolTimeoutError result instead of blocking the
+    turn forever (ISS-037)."""
+    import asyncio
+
+    from robot_harness.brain.base import ToolCallRequest
+    from robot_harness.config.schema import HarnessConfig, ToolConfig
+
+    class _HangingTool(_MockTool):
+        name = "hanging_tool"
+        schema = ToolSchema(
+            name="hanging_tool",
+            description="Never returns",
+            input_schema={"type": "object", "properties": {}},
+        )
+
+        async def invoke(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+            await asyncio.sleep(60)
+            raise AssertionError("unreachable")
+
+    decisions = [
+        BrainDecision(
+            decision_type="tool_call",
+            tool_calls=[ToolCallRequest(tool_name="hanging_tool", args={})],
+        ),
+        BrainDecision(decision_type="plan", message="recovered"),
+    ]
+    cfg = HarnessConfig(tool=ToolConfig(default_timeout_s=0.3))
+    ctx = HarnessContext.build(config=cfg)
+    ctx.tool_registry.register(_HangingTool())
+    loop = AgentLoop(_MockBrain(decisions), ctx, max_turns=5)
+    result = await loop.run(_make_task())
+    assert result.outcome == "success"
+    assert result.tool_results[0]["success"] is False
+    assert result.tool_results[0]["error_type"] == "ToolTimeoutError"
+
+
+def test_tool_deadline_honors_verb_budget() -> None:
+    """A verb's constraints.timeout_s may legitimately exceed the default —
+    the backstop must not undercut the transport's own read deadline."""
+    from robot_harness.config.schema import HarnessConfig, ToolConfig
+
+    cfg = HarnessConfig(tool=ToolConfig(default_timeout_s=30.0))
+    ctx = HarnessContext.build(config=cfg)
+    loop = AgentLoop(_MockBrain([]), ctx)
+    assert loop._tool_deadline_s({}) == 30.0
+    assert loop._tool_deadline_s({"constraints": {"timeout_s": 90.0}}) == 100.0
+    assert loop._tool_deadline_s({"constraints": {"timeout_s": "bogus"}}) == 30.0
