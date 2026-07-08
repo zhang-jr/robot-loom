@@ -50,9 +50,18 @@ class HarnessContext:
         """Return the EmbodimentAdapter for *robot_id*, or None if not registered."""
         return self.embodiment_adapters.get(robot_id)
 
-    async def get_camera_frame(self, robot_id: str, camera: str = "wrist") -> Frame:
-        """Fetch a camera frame from the robot, or return an empty frame if no adapter."""
+    async def get_camera_frame(self, robot_id: str, camera: str = "") -> Frame:
+        """Fetch a camera frame from the robot, or return an empty frame if no adapter.
+
+        An empty ``camera`` resolves to the robot's first camera declared in the
+        fleet config (cameras are a per-robot capability, ADR-008/ADR-009);
+        "wrist" is only the last-resort fallback when the config declares none.
+        """
         adapter = self.get_adapter(robot_id)
+        if not camera:
+            declared = self.config.embodiments.get(robot_id)
+            cams = declared.cameras if declared is not None else []
+            camera = cams[0] if cams else "wrist"
         if adapter is not None:
             return await adapter.get_camera_frame(camera)
         return Frame(camera=camera, robot_id=robot_id)
@@ -183,30 +192,49 @@ class HarnessContext:
         from robot_harness.skill.builtin.navigate_to import NavigateToSkill
         from robot_harness.skill.builtin.pick import PickSkill
         from robot_harness.skill.builtin.place import PlaceSkill
+        from robot_harness.tools.base import Tool
         from robot_harness.tools.memory.backend import build_memory
         from robot_harness.tools.memory.query_tool import MemoryQueryTool
+        from robot_harness.tools.middleware.config import build_middleware_chain_from_config
         from robot_harness.tools.perception.mcp_bundle import register_perception_tools
         from robot_harness.tools.robot_sdk import RobotSdkTool, build_robot_sdk_verb_tools
 
         cfg = config or load_config()
         tool_registry = ToolRegistry()
         skill_registry = SkillRegistry()
-        safety_envelope = SafetyEnvelope(cfg.safety)
 
         catalog = build_catalog(cfg)
         adapters = {rid: catalog.get(rid) for rid in catalog.list_robot_ids()}
+        # The envelope's second pass (EmbodimentAdapter.safety_check, ADR-007)
+        # needs the fleet's adapters, so they are built first.
+        safety_envelope = SafetyEnvelope(cfg.safety, adapters=adapters)
+
+        # Workspace-declared middleware chain (tool.default_middleware) wraps
+        # every framework-registered tool (ISS-037); an empty list is a no-op.
+        # ToolMiddleware forwards capability markers, so a wrapped hardware
+        # tool stays safety-gated.
+        specs = cfg.tool.default_middleware
+
+        def _register(tool: Tool) -> None:
+            tool_registry.register(build_middleware_chain_from_config(tool, specs))
 
         # External capability servers (ADR-026): a non-empty URL in
         # config.tool_servers wires the corresponding tool bundle, so pointing
         # the harness at another deployment is a workspace-config-only change.
         if cfg.tool_servers.perception:
-            register_perception_tools(tool_registry, cfg.tool_servers.perception)
+            for perception_tool in register_perception_tools(
+                tool_registry, cfg.tool_servers.perception
+            ):
+                if specs:
+                    # Re-register wrapped in the config chain (overwrites the
+                    # resolver-wrapped registration under the same name).
+                    _register(perception_tool)
 
         mem = memory or build_memory(cfg.memory, fleet_size=cfg.fleet_size)
         # Long-term recall is an on-demand tool the Brain calls when it needs facts
         # not in recent (working-memory) context — not an every-turn auto-query
         # bypassing the registry (ADR-024 / memory-architecture invariant 4).
-        tool_registry.register(MemoryQueryTool(mem))
+        _register(MemoryQueryTool(mem))
 
         # On-robot act surface (ADR-019): verb tools run the mid-loop perception-
         # action closed loop on the robot; execute_action is the low-level dispatch
@@ -215,8 +243,8 @@ class HarnessContext:
         # skills' ``required_tools`` resolve. Verbs dispatch to a live/sim
         # agent_server when the adapter supports them, else return a mock verdict.
         for verb_tool in build_robot_sdk_verb_tools(adapters):
-            tool_registry.register(verb_tool)
-        tool_registry.register(RobotSdkTool(adapters))
+            _register(verb_tool)
+        _register(RobotSdkTool(adapters))
 
         # Built-in skills (versioned tool compositions). The Brain sees each as a
         # ``skill.<name>`` callable via SkillRegistry.export_for_brain; the

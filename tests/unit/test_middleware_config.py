@@ -196,3 +196,53 @@ class TestRegisterCustomType:
             [MiddlewareSpec.model_construct(type="noop", params={})],  # type: ignore[arg-type]
         )
         assert isinstance(chain, _NoopMiddleware)
+
+
+# ---------------------------------------------------------------------------
+# Capability markers survive wrapping; config chain is actually applied (ISS-037)
+# ---------------------------------------------------------------------------
+
+
+def test_middleware_forwards_hardware_markers() -> None:
+    """Wrapping must never strip hardware_bound / to_safety_command /
+    brain_visible — a wrapped hardware tool that lost its markers would
+    silently bypass the SafetyEnvelope gate."""
+    from robot_harness.tools.base import ToolRegistry
+    from robot_harness.tools.middleware.trace import TraceMiddleware
+    from robot_harness.tools.robot_sdk.http_adapter import RobotSdkTool
+
+    wrapped = TraceMiddleware(RobotSdkTool())
+    assert wrapped.hardware_bound is True
+    assert wrapped.brain_visible is False
+
+    registry = ToolRegistry()
+    registry.register(wrapped)
+    assert registry.requires_safety_check("robot_sdk.execute_action")
+    from robot_harness.tools.base import ToolContext
+
+    cmd = registry.build_safety_command(
+        "robot_sdk.execute_action",
+        {"robot_id": "r0", "command_type": "cartesian", "values": [0.1, 0.2, 0.3]},
+        ToolContext.create("r0"),
+    )
+    assert cmd is not None
+    assert cmd.values == [0.1, 0.2, 0.3]
+
+
+def test_harness_context_applies_default_middleware() -> None:
+    """tool.default_middleware in the workspace config must actually wrap the
+    framework-registered tools — a declared chain that never applies is dead
+    configuration (ISS-037)."""
+    from robot_harness.config.schema import HarnessConfig, MiddlewareSpec, ToolConfig
+    from robot_harness.runtime.harness_context import HarnessContext
+    from robot_harness.tools.middleware.trace import TraceMiddleware
+
+    cfg = HarnessConfig(
+        tool=ToolConfig(default_middleware=[MiddlewareSpec(type="trace")]),
+    )
+    ctx = HarnessContext.build(config=cfg)
+    tool = ctx.tool_registry.get("robot_sdk.execute_action")
+    assert isinstance(tool, TraceMiddleware)
+    # The wrapped hardware tool stays safety-gated.
+    assert ctx.tool_registry.requires_safety_check("robot_sdk.execute_action")
+    assert ctx.tool_registry.requires_safety_check("robot_sdk.reactive_grasp")

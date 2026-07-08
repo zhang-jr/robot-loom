@@ -142,7 +142,10 @@ async def test_invoke_marshals_is_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_invoke_returns_failure_on_backend_unreachable() -> None:
+async def test_invoke_raises_on_backend_unreachable() -> None:
+    """Transport faults propagate as typed exceptions (ISS-037): retry /
+    circuit-breaker middleware must see them, and the AgentLoop normalizes
+    them to failed results at the outermost layer."""
     tool = _make_tool()
     fake = FakeMCPClientSession(
         responses={},
@@ -150,11 +153,8 @@ async def test_invoke_returns_failure_on_backend_unreachable() -> None:
     )
     _attach_fake(tool, fake)
 
-    result = await tool.invoke({}, _ctx())
-
-    assert result.success is False
-    assert result.error_type == "ToolBackendUnreachableError"
-    assert "server down" in (result.error or "")
+    with pytest.raises(ToolBackendUnreachableError, match="server down"):
+        await tool.invoke({}, _ctx())
 
 
 @pytest.mark.asyncio

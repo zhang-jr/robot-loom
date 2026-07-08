@@ -48,7 +48,18 @@ class ToolConfig(BaseModel):
 
 class SafetyConfig(BaseModel):
     enabled: bool = True
-    max_joint_velocity_rad_s: float = 1.0
+    # Symmetric per-joint position limits in radians, one entry per joint, checked
+    # against "joint" commands (whose values are target joint POSITIONS — see
+    # EmbodimentCommand). Empty (the default) = no limits configured: the envelope
+    # honestly skips the joint target (audit outcome "skipped") and the on-robot
+    # runtime's own limits stay authoritative. There is no safe universal default —
+    # limits are per-arm. Velocity is never checked here: a joint command carries
+    # no velocity; velocity constraints are enforced by the on-robot runtime.
+    joint_limits_rad: list[float] = Field(default_factory=list)
+    # Per-axis absolute cap for "delta" commands (incremental displacement,
+    # meters/radians). 0.0 (the default) = unconfigured — honest skip, same
+    # rationale as joint_limits_rad.
+    max_delta_step: float = 0.0
     workspace_bounds_m: list[float] = Field(
         default_factory=lambda: [-2.0, -2.0, 0.0, 2.0, 2.0, 2.0]
     )

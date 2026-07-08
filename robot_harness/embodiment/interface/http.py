@@ -26,7 +26,28 @@ from typing import Any
 
 import httpx
 
-from robot_harness.errors import RobotOfflineError
+from robot_harness.errors import ActionDispatchTimeoutError, RobotOfflineError
+
+# A verb (POST /verb/{name}) blocks until the on-robot mid-loop COMPLETES —
+# seconds to minutes — so it must not share the client's short connect/read
+# timeout (ISS-030). The read deadline follows the verb's own execution budget
+# (``constraints.timeout_s``, the value the on-robot runtime enforces) plus a
+# margin for verdict serialization and transport.
+DEFAULT_VERB_TIMEOUT_S = 30.0
+VERB_TIMEOUT_MARGIN_S = 5.0
+
+
+def verb_read_timeout_s(payload: dict[str, Any]) -> float:
+    """Read deadline for one verb call, derived from ``constraints.timeout_s``."""
+    constraints = payload.get("constraints") or {}
+    raw = constraints.get("timeout_s", DEFAULT_VERB_TIMEOUT_S)
+    try:
+        budget = float(raw)
+    except (TypeError, ValueError):
+        budget = DEFAULT_VERB_TIMEOUT_S
+    if budget <= 0:
+        budget = DEFAULT_VERB_TIMEOUT_S
+    return budget + VERB_TIMEOUT_MARGIN_S
 
 
 class HttpAgentServerClient:
@@ -117,9 +138,41 @@ class HttpAgentServerClient:
     async def call_verb(self, verb: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Invoke an on-robot mid-loop verb (ADR-019). POST /verb/{verb}.
 
+        Blocks until the verb completes, so the read deadline follows the verb's
+        own ``constraints.timeout_s`` budget (plus margin) instead of the
+        client's short default. A read timeout means the robot accepted the verb
+        but did not finish in budget — a typed ActionDispatchTimeoutError, not a
+        false "offline"; the client best-effort POSTs ``/abort`` first so the
+        harness's give-up and the robot's motion cannot diverge.
+
         Returns a CompletionVerdict-shaped dict; the robot_sdk verb tool validates it.
         """
-        return await self._post(f"/verb/{verb}", payload)
+        path = f"/verb/{verb}"
+        read_timeout = verb_read_timeout_s(payload)
+        client = self._ensure_client()
+        try:
+            resp = await client.post(
+                path,
+                json=payload,
+                timeout=httpx.Timeout(self._timeout_s, read=read_timeout),
+            )
+            resp.raise_for_status()
+            data: dict[str, Any] = resp.json()
+        except httpx.ReadTimeout as exc:
+            abort_note = "abort delivered"
+            try:
+                await self.abort({"reason": f"harness verb timeout: {verb}"})
+            except RobotOfflineError:
+                abort_note = "abort delivery failed"
+            raise ActionDispatchTimeoutError(
+                f"verb '{verb}' did not complete within {read_timeout:.1f}s at "
+                f"{self._base_url}{path} ({abort_note})",
+                robot_id=self._robot_id,
+                module_name="embodiment.interface.http",
+            ) from exc
+        except (httpx.HTTPError, ValueError) as exc:
+            raise self._offline(path, exc) from exc
+        return data
 
     async def abort(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         """Stop the in-flight action / verb. POST /abort."""

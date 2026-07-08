@@ -257,20 +257,17 @@ class MCPTool:
                 module_name="tools.mcp.client",
             )
 
-        try:
-            session_cm = self._session_factory(self._server_url, ctx.timeout_s)
-            async with session_cm as session:
-                result = await session.call_tool(
-                    self._name,
-                    args,
-                    timeout_s=ctx.timeout_s if ctx.timeout_s > 0 else None,
-                )
-        except (ToolBackendUnreachableError, ToolTimeoutError) as exc:
-            return _failure_result(
-                tool_name=self._name,
-                trace_id=ctx.trace_id,
-                exc=exc,
-                latency_ms=(time.monotonic() - t0) * 1000,
+        # Transport faults (ToolBackendUnreachableError / ToolTimeoutError)
+        # propagate as typed exceptions: middleware (retry / circuit breaker)
+        # must see them to act, and the AgentLoop normalizes them to failed
+        # results at the outermost layer (ISS-037). Converting them to results
+        # here would make a configured RetryMiddleware silently never fire.
+        session_cm = self._session_factory(self._server_url, ctx.timeout_s)
+        async with session_cm as session:
+            result = await session.call_tool(
+                self._name,
+                args,
+                timeout_s=ctx.timeout_s if ctx.timeout_s > 0 else None,
             )
 
         latency_ms = (time.monotonic() - t0) * 1000
@@ -335,22 +332,5 @@ def _marshal_call_result(
         trace_id=trace_id,
         success=True,
         output=output,
-        latency_ms=latency_ms,
-    )
-
-
-def _failure_result(
-    *,
-    tool_name: str,
-    trace_id: str,
-    exc: ToolError,
-    latency_ms: float,
-) -> ToolResult:
-    return ToolResult(
-        tool_name=tool_name,
-        trace_id=trace_id,
-        success=False,
-        error=str(exc),
-        error_type=type(exc).__name__,
         latency_ms=latency_ms,
     )

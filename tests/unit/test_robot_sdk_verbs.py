@@ -336,3 +336,80 @@ def test_verbs_export_to_openai_function_format() -> None:
     specs = registry.export_for_brain(BrainProfile(name="openai"))
     exported = {spec["function"]["name"] for spec in specs}
     assert exported == set(VERB_TOOL_NAMES)
+
+
+# ---------------------------------------------------------------------------
+# Failure verdicts carry their WHY (ISS-032)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_failed_verdict_surfaces_evidence_in_error() -> None:
+    """A non-success CompletionVerdict must set ``error`` from its evidence and
+    aborted_by — that string is what the Brain and skills replan on; the full
+    verdict still rides in ``output``."""
+
+    class _FailingVerbAdapter:
+        async def call_verb(self, verb: str, payload: dict[str, object]) -> dict[str, object]:
+            return {
+                "outcome": "failed",
+                "evidence": "gripper slipped on rim",
+                "aborted_by": "safety",
+            }
+
+        async def available_verbs(self) -> list[str] | None:
+            return None
+
+    tool = ReactiveGraspTool({"robot-0": _FailingVerbAdapter()})
+    res = await tool.invoke(
+        {"robot_id": "robot-0", "target_hint": {"kind": "phrase", "phrase": "mug"}},
+        _ctx(),
+    )
+    assert res.success is False
+    assert res.error is not None
+    assert "gripper slipped on rim" in res.error
+    assert "aborted_by=safety" in res.error
+    assert res.error_type == "VerbFailed"
+    assert res.output is not None
+    assert res.output["outcome"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_execute_action_cancel_routes_abort_to_adapter() -> None:
+    """Low-level dispatch is fire-and-return: the command keeps executing
+    on-robot, so cancel() must POST /abort like the verb tools do (ISS-035)."""
+    from robot_harness.tools.robot_sdk.http_adapter import RobotSdkTool
+
+    class _FakeAdapter:
+        def __init__(self) -> None:
+            self.aborted_with: str | None = None
+
+        async def abort(self, trace_id: str = "") -> dict[str, object]:
+            self.aborted_with = trace_id
+            return {"aborted": True}
+
+    adapter = _FakeAdapter()
+    tool = RobotSdkTool({"robot-0": adapter})  # type: ignore[dict-item]
+    ctx = _ctx()
+    await tool.cancel(ctx)
+    assert ctx.is_cancelled is True
+    assert adapter.aborted_with == ctx.trace_id
+
+
+@pytest.mark.asyncio
+async def test_malformed_verdict_from_agent_server_is_typed_offline_error() -> None:
+    """A response that is not a CompletionVerdict is 'not speaking the
+    contract' — a typed RobotOfflineError, never a raw ValidationError
+    escaping into the loop (ISS-034)."""
+    from robot_harness.errors import RobotOfflineError
+
+    class _GarbageVerbAdapter:
+        async def call_verb(self, verb: str, payload: dict[str, object]) -> dict[str, object]:
+            return {"outcome": "weird-state"}
+
+        async def available_verbs(self) -> list[str] | None:
+            return None
+
+    tool = HomeTool({"robot-0": _GarbageVerbAdapter()})
+    with pytest.raises(RobotOfflineError, match="malformed CompletionVerdict"):
+        await tool.invoke({"robot_id": "robot-0"}, _ctx())

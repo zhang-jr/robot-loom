@@ -295,3 +295,31 @@ async def test_cancel_middleware_passes_when_not_cancelled() -> None:
     ctx = await _make_ctx()
     result = await tool.invoke({"message": "ok"}, ctx)
     assert result.success
+
+
+def test_reregister_clears_stale_safety_gating() -> None:
+    """Overwriting a hardware-bound tool with a non-hardware one must drop the
+    stale gate record — otherwise build_safety_command keeps calling the
+    REPLACED tool's to_safety_command (ISS-039)."""
+    from robot_harness.tools.robot_sdk.http_adapter import RobotSdkTool
+
+    registry = ToolRegistry()
+    hardware = RobotSdkTool()
+    registry.register(hardware)
+    assert registry.requires_safety_check(hardware.name)
+
+    class _PlainReplacement:
+        name = hardware.name
+        backend = "inproc"
+        schema = hardware.schema
+        is_idempotent = True
+        is_cancellable = False
+
+        async def invoke(self, args: object, ctx: object) -> object:
+            raise NotImplementedError
+
+        async def cancel(self, ctx: object) -> None:
+            pass
+
+    registry.register(_PlainReplacement())
+    assert not registry.requires_safety_check(hardware.name)

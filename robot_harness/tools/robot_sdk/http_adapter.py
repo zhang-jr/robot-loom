@@ -159,4 +159,16 @@ class RobotSdkTool:
         )
 
     async def cancel(self, ctx: ToolContext) -> None:
+        """Abort the dispatched action on the robot, not just the local flag.
+
+        ``dispatch`` returns while the command is still executing on-robot, so a
+        cancel (e.g. the AgentLoop's sibling-cancel after a safety violation in
+        a parallel call) must reach the robot's ``/abort`` — same route the verb
+        tools take (ISS-035). Local event first so it holds even if the abort
+        round-trip fails; no adapter (mock/offline) means nothing to abort.
+        """
         ctx.cancel()
+        adapter = self._adapters.get(ctx.robot_id)
+        abort = getattr(adapter, "abort", None)
+        if abort is not None:
+            await abort(trace_id=ctx.trace_id)

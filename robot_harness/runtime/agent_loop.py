@@ -29,7 +29,6 @@ from robot_harness.brain.base import Brain, BrainDecision, Message, Task, ToolCa
 from robot_harness.critic.base import Critic, CriticVerdict
 from robot_harness.critic.heuristic_fallback import HeuristicCritic
 from robot_harness.critic.replan_policy import ReplanPolicy, SensorHeuristic
-from robot_harness.embodiment.base import Frame
 from robot_harness.errors import (
     BrainOutputInvalidError,
     ChannelError,
@@ -37,9 +36,12 @@ from robot_harness.errors import (
     CriticServiceDown,
     EmbodimentError,
     ReplanLoopExceededError,
+    SafetyError,
     SkillError,
     ToolCancelledError,
     ToolError,
+    ToolNotFoundError,
+    ToolSchemaViolationError,
 )
 from robot_harness.memory.base import MemoryEntry
 from robot_harness.observability.tracer import tracer
@@ -229,9 +231,8 @@ class AgentLoop:
 
                 # --- Critic evaluation (every critic_interval turns) ---
                 if active_critic and turn % self._critic_interval == 0:
-                    frame = await self._ctx.get_camera_frame(task.robot_id)
                     verdict, active_critic, heuristic_critic = await self._run_critic(
-                        active_critic, heuristic_critic, frame, task, trace_id
+                        active_critic, heuristic_critic, task, trace_id
                     )
 
                     if verdict is not None:
@@ -427,16 +428,24 @@ class AgentLoop:
 
     def _tool_message(self, call_id: str, result: dict[str, Any]) -> Message:
         """Render one tool result as a native ``role:tool`` message. Blobs are
-        stripped (the raw image never enters the LLM); the small artifact ref does."""
+        stripped (the raw image never enters the LLM); the small artifact ref does.
+
+        Failures keep their structured output too: a failed/partial verb's
+        evidence, aborted_by, and state snapshot are exactly what the Brain
+        needs to replan on — dropping them would leave it staring at a bare
+        ``{"error": ...}`` (ISS-032)."""
+        output = result.get("output") or {}
+        facts = {k: v for k, v in output.items() if k not in self._OBSERVATION_BLOB_KEYS}
         if result.get("success"):
-            output = result.get("output") or {}
-            facts = {k: v for k, v in output.items() if k not in self._OBSERVATION_BLOB_KEYS}
             content = json.dumps(facts, default=str)
         else:
-            content = json.dumps(
-                {"error": result.get("error"), "error_type": result.get("error_type")},
-                default=str,
-            )
+            payload: dict[str, Any] = {
+                "error": result.get("error"),
+                "error_type": result.get("error_type"),
+            }
+            if facts:
+                payload["output"] = facts
+            content = json.dumps(payload, default=str)
         return {"role": "tool", "tool_call_id": call_id, "content": content}
 
     @staticmethod
@@ -459,11 +468,27 @@ class AgentLoop:
         self,
         active_critic: Critic,
         heuristic_critic: HeuristicCritic | None,
-        frame: Frame,
         task: Task,
         trace_id: str,
     ) -> tuple[CriticVerdict | None, Critic, HeuristicCritic | None]:
-        """Call the critic, falling back to heuristic if the service is down."""
+        """Fetch a frame and call the critic, degrading instead of crashing.
+
+        Supervision is best-effort by design (ADR-010): a camera fetch failure
+        (robot offline, camera 404, malformed frame) skips this round's critic —
+        traced as unsupervised — and a critic-service failure falls back to the
+        timeout heuristic. Neither may abort the task.
+        """
+        try:
+            frame = await self._ctx.get_camera_frame(task.robot_id)
+        except Exception as exc:  # noqa: BLE001
+            tracer.event(
+                "agent_loop.critic_skipped",
+                trace_id=trace_id,
+                robot_id=task.robot_id,
+                error=str(exc),
+                warning="camera frame fetch failed — turn runs unsupervised.",
+            )
+            return None, active_critic, heuristic_critic
         try:
             verdict = await active_critic.judge(frame, None, task.description)
             return verdict, active_critic, heuristic_critic
@@ -651,8 +676,8 @@ class AgentLoop:
         trace_id: str,
         outbound: OutboundHandle,
     ) -> list[dict[str, Any]]:
-        async def _run_one(req: ToolCallRequest) -> dict[str, Any]:
-            tool_ctx = ToolContext(
+        ctxs = [
+            ToolContext(
                 trace_id=trace_id,
                 robot_id=task.robot_id,
                 subtask_id=task.subtask_id,
@@ -660,11 +685,81 @@ class AgentLoop:
                 artifact_store=self._ctx.artifact_store,
                 outbound=outbound,
             )
+            for _ in requests
+        ]
+
+        async def _run_one(req: ToolCallRequest, tool_ctx: ToolContext) -> dict[str, Any]:
             result = await self._invoke_tool(req, tool_ctx)
             return result.model_dump()
 
-        gathered = await asyncio.gather(*[_run_one(r) for r in requests])
+        calls = [
+            asyncio.ensure_future(_run_one(req, c)) for req, c in zip(requests, ctxs, strict=True)
+        ]
+        try:
+            gathered = await asyncio.gather(*calls)
+        except BaseException:
+            # Must-stop semantics: _invoke_tool normalizes every fault to a failed
+            # result and re-raises ONLY SafetyError (enforced by its catch-all,
+            # ISS-034), so what arrives here is a safety violation or a task-level
+            # cancellation. Sibling in-flight calls of the same turn must not
+            # keep actuating in the background while it propagates.
+            await self._cancel_sibling_calls(requests, ctxs, calls, trace_id)
+            raise
         return list(gathered)
+
+    async def _cancel_sibling_calls(
+        self,
+        requests: list[ToolCallRequest],
+        ctxs: list[ToolContext],
+        calls: list[asyncio.Task[dict[str, Any]]],
+        trace_id: str,
+    ) -> None:
+        """Cancel, reap, and actively abort the turn's in-flight sibling calls.
+
+        Runs when one parallel call raised a safety violation. Cancellation is
+        three-layered: the ToolContext cancel event (tools honoring the cancel
+        protocol see it at checkpoints), asyncio task cancellation (interrupts
+        the in-flight await), and — for cancellable hardware tools — the tool's
+        own ``cancel()`` (a verb POSTs ``/abort``; the robot falls back to a
+        safe pose). Abort failures are traced, never raised: they must not mask
+        the propagating violation.
+        """
+        pending: list[tuple[ToolCallRequest, ToolContext]] = []
+        for req, tool_ctx, call in zip(requests, ctxs, calls, strict=True):
+            if call.done():
+                continue
+            tool_ctx.cancel()
+            call.cancel()
+            pending.append((req, tool_ctx))
+        # Reap so no sibling exception goes unretrieved.
+        await asyncio.gather(*calls, return_exceptions=True)
+        if not pending:
+            return
+        tracer.event(
+            "agent_loop.siblings_cancelled",
+            trace_id=trace_id,
+            tools=[req.tool_name for req, _ in pending],
+            reason="safety violation in a parallel call of the same turn",
+        )
+        for req, tool_ctx in pending:
+            # Skills have no cancel protocol; task cancellation already reached them.
+            if self._ctx.skill_registry.resolve_brain_call(req.tool_name) is not None:
+                continue
+            try:
+                tool = self._ctx.tool_registry.get(req.tool_name)
+            except ToolNotFoundError:
+                continue
+            if not tool.is_cancellable:
+                continue
+            try:
+                await tool.cancel(tool_ctx)
+            except Exception as exc:  # noqa: BLE001 — best-effort abort, traced above
+                tracer.event(
+                    "agent_loop.sibling_abort_failed",
+                    trace_id=trace_id,
+                    tool_name=req.tool_name,
+                    error=str(exc),
+                )
 
     async def _invoke_tool(self, req: ToolCallRequest, ctx: ToolContext) -> ToolResult:
         # A skill.<name> call routes to Skill.execute; everything else is a tool.
@@ -683,8 +778,25 @@ class AgentLoop:
                 error_type=type(exc).__name__,
             )
 
+        # Schema gate before anything runs: Brain-issued args missing required
+        # fields are a failed call the Brain corrects — not a KeyError deep in
+        # a tool, and not a "skipped" safety audit for a call that never
+        # should have reached the gate (ISS-034).
+        try:
+            self._ctx.tool_registry.validate_args(req.tool_name, req.args)
+        except ToolSchemaViolationError as exc:
+            return ToolResult(
+                tool_name=req.tool_name,
+                trace_id=ctx.trace_id,
+                success=False,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+
         # Every tool that actuates the robot is gated behind SafetyEnvelope.
-        # SafetyEnvelopeViolation is NOT caught — it propagates to trigger e-stop.
+        # SafetyEnvelopeViolation is NOT caught — the refused command was never
+        # dispatched (pre-dispatch semantics); the violation propagates, aborts
+        # the task, and cancels the turn's sibling calls.
         registry = self._ctx.tool_registry
         if registry.requires_safety_check(req.tool_name):
             cmd = registry.build_safety_command(req.tool_name, req.args, ctx)
@@ -694,9 +806,24 @@ class AgentLoop:
                     trace_id=ctx.trace_id,
                     subtask_id=ctx.subtask_id,
                 )
+            else:
+                # Hardware-bound but no harness-checkable target (e.g. a phrase
+                # hint): honest "skipped" audit — never indistinguishable from
+                # "checked and passed". The on-robot reflex is authoritative.
+                self._ctx.safety_envelope.note_skipped(
+                    tool_name=req.tool_name,
+                    robot_id=ctx.robot_id,
+                    trace_id=ctx.trace_id,
+                    subtask_id=ctx.subtask_id,
+                    reason="no harness-checkable target — on-robot reflex is authoritative",
+                )
 
         try:
-            return await tool.invoke(req.args, ctx)
+            return await asyncio.wait_for(
+                tool.invoke(req.args, ctx), timeout=self._tool_deadline_s(req.args)
+            )
+        except TimeoutError:
+            return await self._backstop_timeout(req, tool, ctx)
         except ToolCancelledError:
             return ToolResult(
                 tool_name=req.tool_name,
@@ -709,7 +836,31 @@ class AgentLoop:
             # A backend/robot fault (server unreachable, robot offline, dispatch
             # timeout) is a failed tool call the Brain can replan around — NOT a
             # crash. SafetyEnvelopeViolation is a SafetyError, not caught here, so
-            # it still propagates to trigger e-stop.
+            # it still propagates and aborts the task.
+            return ToolResult(
+                tool_name=req.tool_name,
+                trace_id=ctx.trace_id,
+                success=False,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+        except SafetyError:
+            # The must-stop path: propagates, aborts the task, cancels siblings.
+            raise
+        except Exception as exc:  # noqa: BLE001
+            # An untyped exception (tool bug, unparsed external payload) must
+            # not ride the safety-violation path and crash the task without an
+            # episode: normalize it to a failed result the Brain can react to,
+            # with the true type preserved and the fault traced (ISS-034).
+            tracer.event(
+                "agent_loop.tool_unexpected_error",
+                trace_id=ctx.trace_id,
+                robot_id=ctx.robot_id,
+                tool_name=req.tool_name,
+                error=str(exc),
+                error_type=type(exc).__name__,
+                warning="untyped exception escaped the tool — normalized to a failed result",
+            )
             return ToolResult(
                 tool_name=req.tool_name,
                 trace_id=ctx.trace_id,
@@ -718,16 +869,69 @@ class AgentLoop:
                 error_type=type(exc).__name__,
             )
 
+    def _tool_deadline_s(self, args: dict[str, Any]) -> float:
+        """Loop-level backstop deadline for one atomic tool call (ISS-037).
+
+        ``ctx.timeout_s`` is advisory — only tools that self-enforce honor it —
+        so a hung tool would otherwise block the turn forever. A verb's own
+        execution budget (``constraints.timeout_s``, enforced on-robot and by
+        the transport read timeout) may legitimately exceed the default, so the
+        backstop is the larger of the two plus margin: it fires only when every
+        layer below failed to.
+        """
+        base = self._ctx.config.tool.default_timeout_s
+        constraints = (args or {}).get("constraints") or {}
+        try:
+            budget = float(constraints.get("timeout_s") or 0.0)
+        except (TypeError, ValueError):
+            budget = 0.0
+        return max(base, budget + 10.0)
+
+    async def _backstop_timeout(
+        self, req: ToolCallRequest, tool: Any, ctx: ToolContext
+    ) -> ToolResult:
+        """A tool blew through every deadline below the loop: cancel it (for
+        hardware tools that means an on-robot abort) and fail the call."""
+        ctx.cancel()
+        if getattr(tool, "is_cancellable", False):
+            try:
+                await tool.cancel(ctx)
+            except Exception as exc:  # noqa: BLE001 — best-effort abort
+                tracer.event(
+                    "agent_loop.timeout_abort_failed",
+                    trace_id=ctx.trace_id,
+                    tool_name=req.tool_name,
+                    error=str(exc),
+                )
+        deadline = self._tool_deadline_s(req.args)
+        tracer.event(
+            "agent_loop.tool_backstop_timeout",
+            trace_id=ctx.trace_id,
+            robot_id=ctx.robot_id,
+            tool_name=req.tool_name,
+            deadline_s=deadline,
+            warning="tool exceeded the loop backstop deadline — cancelled",
+        )
+        return ToolResult(
+            tool_name=req.tool_name,
+            trace_id=ctx.trace_id,
+            success=False,
+            error=f"tool '{req.tool_name}' exceeded the loop backstop deadline ({deadline:.1f}s)",
+            error_type="ToolTimeoutError",
+        )
+
     async def _invoke_skill(
         self, skill: Skill, req: ToolCallRequest, ctx: ToolContext
     ) -> ToolResult:
         """Dispatch a Brain ``skill.<name>`` call to Skill.execute.
 
         The skill runs its internal tool calls through a
-        :class:`SafetyGatedToolRegistry`, so each hardware-bound call still passes
-        SafetyEnvelope.check — a SafetyEnvelopeViolation propagates uncaught to
-        trigger e-stop. A ``SkillError`` becomes a failed ToolResult the Brain can
-        react to; the SkillResult is surfaced as the tool output.
+        :class:`SafetyGatedToolRegistry` bound to this call's ToolContext, so each
+        hardware-bound call still passes SafetyEnvelope.check and every internal
+        call stays on the task trace — a SafetyEnvelopeViolation propagates
+        uncaught and aborts the task (the refused command was never dispatched).
+        A ``SkillError`` becomes a failed ToolResult the Brain can react to; the
+        SkillResult is surfaced as the tool output.
         """
         t0 = time.monotonic()
         args = req.args or {}
@@ -738,12 +942,16 @@ class AgentLoop:
             robot_id=args.get("robot_id", ctx.robot_id),
             parameters=args.get("parameters") or {},
         )
-        # A drop-in for the skill: `.get()` returns safety-gated tools, everything
-        # else delegates. Not a ToolRegistry subclass (it wraps one), so cast to the
-        # param type the Skill Protocol declares.
+        # A drop-in for the skill: `.get()` returns safety-gated tools rebound onto
+        # the task context (trace continuity + artifact_store/outbound inheritance —
+        # the Skill protocol has no trace channel, so skills mint fresh contexts),
+        # everything else delegates. Not a ToolRegistry subclass (it wraps one), so
+        # cast to the param type the Skill Protocol declares.
         gated_tools = cast(
             ToolRegistry,
-            SafetyGatedToolRegistry(self._ctx.tool_registry, self._ctx.safety_envelope),
+            SafetyGatedToolRegistry(
+                self._ctx.tool_registry, self._ctx.safety_envelope, parent_ctx=ctx
+            ),
         )
         tracer.event(
             "agent_loop.skill_invoke",
@@ -758,7 +966,31 @@ class AgentLoop:
             # Skill failure or a backend/robot fault inside one of its tool calls:
             # surface as a failed ToolResult (true error_type preserved) so the
             # Brain can react. SafetyEnvelopeViolation is NOT in this tuple — it
-            # propagates uncaught to trigger e-stop.
+            # propagates uncaught and aborts the task.
+            return ToolResult(
+                tool_name=req.tool_name,
+                trace_id=ctx.trace_id,
+                success=False,
+                error=str(exc),
+                error_type=type(exc).__name__,
+                latency_ms=(time.monotonic() - t0) * 1000,
+            )
+        except SafetyError:
+            # The must-stop path: propagates, aborts the task, cancels siblings.
+            raise
+        except Exception as exc:  # noqa: BLE001
+            # A bug in a (user-provided) skill must not crash the task through
+            # the safety-violation path: normalize to a failed result, true
+            # type preserved, fault traced (ISS-034).
+            tracer.event(
+                "agent_loop.skill_unexpected_error",
+                trace_id=ctx.trace_id,
+                robot_id=subtask.robot_id,
+                skill=manifest.name,
+                error=str(exc),
+                error_type=type(exc).__name__,
+                warning="untyped exception escaped the skill — normalized to a failed result",
+            )
             return ToolResult(
                 tool_name=req.tool_name,
                 trace_id=ctx.trace_id,

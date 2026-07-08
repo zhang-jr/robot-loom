@@ -49,10 +49,10 @@ import time
 from collections.abc import Collection
 from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from robot_harness.embodiment.base import EmbodimentCommand, SupportsVerbs
-from robot_harness.errors import ToolCancelledError
+from robot_harness.errors import RobotOfflineError, ToolCancelledError
 from robot_harness.tools.base import ToolContext, ToolResult
 from robot_harness.tools.schema import ToolBackend, ToolSchema
 
@@ -256,11 +256,24 @@ class _RobotSdkVerbTool:
             )
         verdict = await self._dispatch(args, ctx)
         latency = (time.monotonic() - t0) * 1000
+        success = verdict.outcome == "success"
+        # A non-success verdict must surface WHY as the error string — evidence
+        # and aborted_by are what the Brain (and skills reading ``.error``)
+        # replan on (ISS-032); the full verdict still rides in ``output``.
+        error = None
+        if not success:
+            error = (
+                f"{self.name} outcome={verdict.outcome} "
+                f"(aborted_by={verdict.aborted_by}): "
+                f"{verdict.evidence or 'no evidence reported'}"
+            )
         return ToolResult(
             tool_name=self.name,
             trace_id=ctx.trace_id,
-            success=verdict.outcome == "success",
+            success=success,
             output=verdict.model_dump(),
+            error=error,
+            error_type=None if success else "VerbFailed",
             latency_ms=latency,
         )
 
@@ -291,7 +304,19 @@ class _RobotSdkVerbTool:
         if isinstance(adapter, SupportsVerbs):
             verb = self.name.split(".", 1)[1]
             resp = await adapter.call_verb(verb, args)
-            return CompletionVerdict.model_validate(resp)
+            try:
+                return CompletionVerdict.model_validate(resp)
+            except ValidationError as exc:
+                # A response that is not a CompletionVerdict is "not speaking
+                # the contract" — the same typed failure as unreachable (the
+                # wire clients set the precedent), never a raw ValidationError
+                # escaping into the loop (ISS-034).
+                raise RobotOfflineError(
+                    f"agent_server returned a malformed CompletionVerdict for verb '{verb}': {exc}",
+                    robot_id=robot_id,
+                    tool_name=self.name,
+                    module_name="tools.robot_sdk.verbs",
+                ) from exc
         return await self._simulate(args, ctx)
 
     async def _simulate(self, args: dict[str, Any], ctx: ToolContext) -> CompletionVerdict:

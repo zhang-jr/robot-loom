@@ -19,17 +19,34 @@ class NavigateToSkill:
 
     manifest = SkillManifest(
         name="navigate_to",
-        version="0.2.0",
+        version="0.3.0",
         description="Navigate the robot to a target location",
         embodiment_compat=["mobile", "humanoid", "quadruped"],
         safety_class=SafetyClass.MEDIUM,
         required_tools=[ROBOT_SDK_LOCOMOTE_TO],
         tags=["navigation", "locomotion"],
+        data_schema={
+            "type": "object",
+            "properties": {
+                "robot_id": {"type": "string", "description": "Robot to navigate."},
+                "description": {"type": "string"},
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "target_pose": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "minItems": 2,
+                            "maxItems": 3,
+                            "description": "Map-frame goal [x, y] or [x, y, yaw].",
+                        }
+                    },
+                    "required": ["target_pose"],
+                },
+            },
+            "required": ["robot_id", "parameters"],
+        },
     )
-
-    async def can_handle(self, subtask: Subtask, ctx: Any) -> bool:
-        kw = subtask.description.lower()
-        return "navigate" in kw or "go to" in kw or "move to" in kw or "walk to" in kw
 
     async def execute(
         self,
@@ -38,7 +55,17 @@ class NavigateToSkill:
         ctx: Any,
     ) -> SkillResult:
         robot_id = subtask.robot_id
-        target_pose: list[float] = subtask.parameters.get("target_pose", [1.0, 0.0, 0.0])
+        # A motion skill must never fall back to a made-up goal: a missing
+        # parameter is a failed subtask the Brain can correct, not a default move.
+        target_pose: list[float] | None = subtask.parameters.get("target_pose")
+        if not target_pose:
+            return SkillResult(
+                skill_name="navigate_to",
+                skill_version=self.manifest.version,
+                subtask_id=subtask.subtask_id,
+                success=False,
+                message="missing required parameter 'target_pose' [x, y] or [x, y, yaw]",
+            )
 
         tool_ctx = ToolContext.create(robot_id, subtask_id=subtask.subtask_id)
 
@@ -53,7 +80,7 @@ class NavigateToSkill:
         if nav.success:
             return SkillResult(
                 skill_name="navigate_to",
-                skill_version="0.2.0",
+                skill_version=self.manifest.version,
                 subtask_id=subtask.subtask_id,
                 success=True,
                 outcome="success",
@@ -61,7 +88,7 @@ class NavigateToSkill:
             )
         return SkillResult(
             skill_name="navigate_to",
-            skill_version="0.2.0",
+            skill_version=self.manifest.version,
             subtask_id=subtask.subtask_id,
             success=False,
             outcome="failure",
