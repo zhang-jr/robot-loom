@@ -178,8 +178,11 @@ class ToolRegistry:
         """Register a tool; silently overwrites an existing entry with the same name.
 
         Tools that actuate the robot (``hardware_bound``) are recorded so the
-        AgentLoop runs SafetyEnvelope.check() before invoking them.
+        AgentLoop runs SafetyEnvelope.check() before invoking them. Overwriting
+        also resets that record — a stale entry would keep gating the name with
+        the REPLACED tool's ``to_safety_command`` (ISS-039).
         """
+        self._safety_gated.pop(tool.name, None)
         if getattr(tool, "hardware_bound", False):
             self._safety_gated[tool.name] = getattr(tool, "to_safety_command", None)
         self._tools[tool.name] = tool
