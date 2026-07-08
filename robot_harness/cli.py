@@ -90,7 +90,10 @@ def _cmd_mcp_serve(args: argparse.Namespace) -> None:
     from robot_harness.tools.mcp.server import HarnessMCPServer
 
     ctx = _build_ctx()
-    _register_generic_tools(ctx)
+    # Deliberately NO _register_generic_tools here: the reverse MCP server hands
+    # every brain-visible tool to arbitrary external clients, and shell_run /
+    # file-write tools would be an unauthenticated remote-execution surface
+    # (ISS-033). External callers get the robot vocabulary, not host access.
     server = HarnessMCPServer(
         ctx.tool_registry,
         ctx.safety_envelope,

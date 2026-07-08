@@ -267,3 +267,26 @@ async def test_hardware_tool_violation_refused_not_dispatched(
     assert result.structuredContent["error_type"] == "SafetyEnvelopeViolation"
     assert arm_tool.dispatched == []
     assert any(e.outcome == "violated" for e in audit_log.tail(5))
+
+
+# ---------------------------------------------------------------------------
+# Exposure surface — no host-execution tools on the reverse channel (ISS-033)
+# ---------------------------------------------------------------------------
+
+
+def test_default_context_never_exposes_host_execution_tools(tmp_path: Path) -> None:
+    """Regression for ISS-033: ``robot-loom mcp serve`` exposes every
+    brain-visible tool in the registry to arbitrary external clients, so the
+    context it serves must never carry shell / filesystem tools."""
+    from robot_harness.config.schema import HarnessConfig
+    from robot_harness.runtime.harness_context import HarnessContext
+
+    ctx = HarnessContext.build(config=HarnessConfig())
+    server = HarnessMCPServer(
+        ctx.tool_registry,
+        ctx.safety_envelope,
+    )
+    exposed = {t["name"] for t in server.list_tools()}
+    assert "shell_run" not in exposed
+    assert "fs_read" not in exposed
+    assert "fs_write" not in exposed
