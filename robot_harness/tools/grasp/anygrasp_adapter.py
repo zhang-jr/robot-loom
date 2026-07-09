@@ -12,12 +12,18 @@ from robot_harness.tools.schema import ToolBackend, ToolSchema
 class AnyGraspTool:
     """Mock grasp pose estimation tool.
 
-    Phase 1: returns a synthetic 6-DOF grasp pose without contacting any server.
-    Phase 2: will POST to an external AnyGrasp / GraspAnything server.
+    Currently returns a synthetic 6-DOF grasp pose without contacting any server.
     """
 
+    # TODO (ADR-022): the AnyGrasp / GraspAnything client belongs inside the
+    # on-robot reactive_grasp verb, not the harness. This adapter stays only as a
+    # debug/override path (brain_visible=False) or a sim stand-in.
     name = "grasp.estimate_pose"
     backend: ToolBackend = "native"
+    # Verb-internal sub-capability: consumed inside an on-robot grasp verb, not a
+    # standalone Brain capability. Hidden from planning so the Brain does not
+    # stitch "detect -> estimate_pose -> dispatch" into a slow-layer pipeline.
+    brain_visible = False
     schema = ToolSchema(
         name="grasp.estimate_pose",
         description="Estimate a 6-DOF grasp pose for a detected object.",

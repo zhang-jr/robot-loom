@@ -142,6 +142,50 @@ def test_export_for_anthropic_profile() -> None:
     assert "input_schema" in specs[0]
 
 
+class _HiddenTool(_EchoTool):
+    """Registered + invocable, but hidden from the Brain's planning vocabulary."""
+
+    name = "hidden"
+    schema = ToolSchema(
+        name="hidden",
+        description="Hidden from Brain",
+        input_schema={"type": "object", "properties": {}},
+    )
+    brain_visible = False
+
+
+def test_brain_visible_false_hidden_from_export() -> None:
+    reg = ToolRegistry()
+    reg.register(_EchoTool())
+    reg.register(_HiddenTool())
+
+    # Both are registered and invocable...
+    assert "echo" in reg
+    assert "hidden" in reg
+    assert reg.get("hidden").name == "hidden"
+    # ...and both show up for debugging via list_schemas...
+    assert {s.name for s in reg.list_schemas()} == {"echo", "hidden"}
+
+    # ...but only the visible one reaches the Brain's planning vocabulary.
+    specs = reg.export_for_brain(BrainProfile(name="openai"))
+    assert {s["function"]["name"] for s in specs} == {"echo"}
+
+
+def test_export_exclude_names_hides_per_call_only() -> None:
+    """exclude_names is a session-scoped export filter (live-capability gate):
+    the tool stays registered and invocable, and a later export without the
+    exclusion sees it again."""
+    reg = ToolRegistry()
+    reg.register(_EchoTool())
+
+    specs = reg.export_for_brain(BrainProfile(name="openai"), exclude_names={"echo"})
+    assert specs == []
+    assert "echo" in reg  # still registered + invocable
+
+    specs = reg.export_for_brain(BrainProfile(name="openai"))
+    assert {s["function"]["name"] for s in specs} == {"echo"}
+
+
 def test_validate_args_missing_required() -> None:
     reg = ToolRegistry()
     reg.register(_EchoTool())
@@ -251,3 +295,31 @@ async def test_cancel_middleware_passes_when_not_cancelled() -> None:
     ctx = await _make_ctx()
     result = await tool.invoke({"message": "ok"}, ctx)
     assert result.success
+
+
+def test_reregister_clears_stale_safety_gating() -> None:
+    """Overwriting a hardware-bound tool with a non-hardware one must drop the
+    stale gate record — otherwise build_safety_command keeps calling the
+    REPLACED tool's to_safety_command (ISS-039)."""
+    from robot_harness.tools.robot_sdk.http_adapter import RobotSdkTool
+
+    registry = ToolRegistry()
+    hardware = RobotSdkTool()
+    registry.register(hardware)
+    assert registry.requires_safety_check(hardware.name)
+
+    class _PlainReplacement:
+        name = hardware.name
+        backend = "inproc"
+        schema = hardware.schema
+        is_idempotent = True
+        is_cancellable = False
+
+        async def invoke(self, args: object, ctx: object) -> object:
+            raise NotImplementedError
+
+        async def cancel(self, ctx: object) -> None:
+            pass
+
+    registry.register(_PlainReplacement())
+    assert not registry.requires_safety_check(hardware.name)

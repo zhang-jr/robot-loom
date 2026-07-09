@@ -13,14 +13,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from robot_harness.brain.base import (
-    BrainDecision,
-    CriticSignal,
-    ExecutionHistory,
-    MemoryView,
-    Task,
-    ToolCallRequest,
-)
+from robot_harness.brain.base import BrainDecision, Task, ToolCallRequest
 from robot_harness.memory.base import MemoryEntry
 from robot_harness.memory.episodic_memory import InMemoryEpisodicMemory
 from robot_harness.memory.object_memory import InMemoryObjectMemory
@@ -98,20 +91,53 @@ class NavTool:
 # ---------------------------------------------------------------------------
 
 
+def _prior_failures(messages: list) -> list:  # type: ignore[type-arg]
+    """Scan the conversation for a memory.query tool result and pull out failures.
+
+    Recall is on demand now (ADR-024 / ADR-025): the episodes come back as a
+    ``role:tool`` message, not a pre-injected memory_view.
+    """
+    import json
+
+    for m in messages:
+        if m.get("role") != "tool":
+            continue
+        try:
+            payload = json.loads(m.get("content") or "{}")
+        except json.JSONDecodeError:
+            continue
+        hits = payload.get("hits") or []
+        fails = [h for h in hits if (h.get("content") or {}).get("outcome") == "failure"]
+        if fails:
+            return fails
+    return []
+
+
 class MemoryAwareBrain:
-    """Brain that reads episodic memory hits and adjusts strategy."""
+    """Brain that recalls episodic memory via memory.query and adjusts strategy."""
 
     def __init__(self) -> None:
         self._turn = 0
 
-    async def decide(self, task: Task, memory_view: MemoryView, tools: list) -> BrainDecision:
+    async def decide(self, messages: list, tools: list, **_: object) -> BrainDecision:  # type: ignore[type-arg]
         self._turn += 1
 
-        # Inspect prior episode memory for relevant context
-        prior_failures = [
-            h for h in memory_view.episodic_hits if h.get("content", {}).get("outcome") == "failure"
-        ]
-        if prior_failures and self._turn == 1:
+        # Turn 1: recall prior episodes on demand via the memory.query tool.
+        if self._turn == 1:
+            return BrainDecision(
+                decision_type="tool_call",
+                tool_calls=[
+                    ToolCallRequest(
+                        tool_name="memory.query",
+                        args={"memory_type": "episodic", "text": "charging station"},
+                        call_id="recall_1",
+                    )
+                ],
+            )
+
+        # Inspect the recalled episodes that came back as a role:tool message.
+        prior_failures = _prior_failures(messages)
+        if prior_failures and self._turn == 2:
             print(
                 f"  [Brain] Found {len(prior_failures)} prior failure(s) in memory — adjusting strategy"
             )
@@ -126,9 +152,6 @@ class MemoryAwareBrain:
                 )
             ],
         )
-
-    async def replan(self, history: ExecutionHistory, critic_signal: CriticSignal) -> BrainDecision:
-        return BrainDecision(decision_type="give_up", message="no replan needed")
 
     @property
     def supports_streaming(self) -> bool:

@@ -15,7 +15,7 @@ URL scheme conventions:
 
 Per-call sessions keep the implementation simple and stateless.  Production
 deployments that need lower latency should wrap a long-lived ``MCPClientSession``
-externally (TODO: connection pool, tracked in Phase 2 follow-up).
+externally.
 """
 
 from __future__ import annotations
@@ -27,12 +27,12 @@ from types import TracebackType
 from typing import Any, Self
 from urllib.parse import urlsplit
 
+import httpx
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.exceptions import McpError
 from mcp.types import CallToolResult, ListToolsResult
-import httpx
 
 from robot_harness.errors import (
     ToolBackendUnreachableError,
@@ -116,11 +116,12 @@ class MCPClientSession:
         """
         scheme = urlsplit(self._server_url).scheme.lower()
         if scheme in ("http", "https"):
-            http_client = httpx.AsyncClient(
-                timeout=httpx.Timeout(self._init_timeout_s, read=300.0),
-                trust_env=False,
+            http_client = await stack.enter_async_context(
+                httpx.AsyncClient(
+                    timeout=httpx.Timeout(self._init_timeout_s, read=300.0),
+                    trust_env=False,
+                )
             )
-            await stack.enter_async_context(http_client)
             read, write, _get_session_id = await stack.enter_async_context(
                 streamable_http_client(
                     self._server_url,
@@ -190,7 +191,7 @@ class MCPTool:
 
     A fresh :class:`MCPClientSession` is opened per ``invoke`` call.  This keeps
     the implementation stateless and easy to reason about; long-running
-    deployments should layer a connection pool on top (TODO: Phase 2 follow-up).
+    deployments should layer a connection pool on top.
 
     Args:
         tool_name: Tool identifier as published by the MCP server (must match).
@@ -201,6 +202,8 @@ class MCPTool:
         is_idempotent: Whether repeated calls with the same args are safe.
     """
 
+    # TODO (ADR-002): reuse a long-lived MCPClientSession / connection pool in
+    # production instead of opening one per invoke.
     def __init__(
         self,
         tool_name: str,
@@ -261,20 +264,17 @@ class MCPTool:
                 module_name="tools.mcp.client",
             )
 
-        try:
-            session_cm = self._session_factory(self._server_url, ctx.timeout_s)
-            async with session_cm as session:
-                result = await session.call_tool(
-                    self._name,
-                    args,
-                    timeout_s=ctx.timeout_s if ctx.timeout_s > 0 else None,
-                )
-        except (ToolBackendUnreachableError, ToolTimeoutError) as exc:
-            return _failure_result(
-                tool_name=self._name,
-                trace_id=ctx.trace_id,
-                exc=exc,
-                latency_ms=(time.monotonic() - t0) * 1000,
+        # Transport faults (ToolBackendUnreachableError / ToolTimeoutError)
+        # propagate as typed exceptions: middleware (retry / circuit breaker)
+        # must see them to act, and the AgentLoop normalizes them to failed
+        # results at the outermost layer (ISS-037). Converting them to results
+        # here would make a configured RetryMiddleware silently never fire.
+        session_cm = self._session_factory(self._server_url, ctx.timeout_s)
+        async with session_cm as session:
+            result = await session.call_tool(
+                self._name,
+                args,
+                timeout_s=ctx.timeout_s if ctx.timeout_s > 0 else None,
             )
 
         latency_ms = (time.monotonic() - t0) * 1000
@@ -339,22 +339,5 @@ def _marshal_call_result(
         trace_id=trace_id,
         success=True,
         output=output,
-        latency_ms=latency_ms,
-    )
-
-
-def _failure_result(
-    *,
-    tool_name: str,
-    trace_id: str,
-    exc: ToolError,
-    latency_ms: float,
-) -> ToolResult:
-    return ToolResult(
-        tool_name=tool_name,
-        trace_id=trace_id,
-        success=False,
-        error=str(exc),
-        error_type=type(exc).__name__,
         latency_ms=latency_ms,
     )

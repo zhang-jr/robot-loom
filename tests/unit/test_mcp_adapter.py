@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from robot_harness.errors import (
@@ -140,7 +142,10 @@ async def test_invoke_marshals_is_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_invoke_returns_failure_on_backend_unreachable() -> None:
+async def test_invoke_raises_on_backend_unreachable() -> None:
+    """Transport faults propagate as typed exceptions (ISS-037): retry /
+    circuit-breaker middleware must see them, and the AgentLoop normalizes
+    them to failed results at the outermost layer."""
     tool = _make_tool()
     fake = FakeMCPClientSession(
         responses={},
@@ -148,11 +153,8 @@ async def test_invoke_returns_failure_on_backend_unreachable() -> None:
     )
     _attach_fake(tool, fake)
 
-    result = await tool.invoke({}, _ctx())
-
-    assert result.success is False
-    assert result.error_type == "ToolBackendUnreachableError"
-    assert "server down" in (result.error or "")
+    with pytest.raises(ToolBackendUnreachableError, match="server down"):
+        await tool.invoke({}, _ctx())
 
 
 @pytest.mark.asyncio
@@ -215,31 +217,33 @@ def test_session_raises_if_used_before_enter() -> None:
 
 
 # ---------------------------------------------------------------------------
-# HarnessMCPServer (still a Phase-2 stub for reverse direction)
+# HarnessMCPServer list_tools helper (protocol-level tests: test_mcp_server.py)
 # ---------------------------------------------------------------------------
 
 
-def test_harness_mcp_server_list_tools_empty_registry() -> None:
-    server = HarnessMCPServer(ToolRegistry())
+def _make_server(registry: ToolRegistry, tmp_path: Path) -> HarnessMCPServer:
+    from robot_harness.config.schema import SafetyConfig
+    from robot_harness.safety.audit_log import SafetyAuditLog
+    from robot_harness.safety.envelope import SafetyEnvelope
+
+    envelope = SafetyEnvelope(SafetyConfig(), audit_log=SafetyAuditLog(path=tmp_path / "a.jsonl"))
+    return HarnessMCPServer(registry, envelope)
+
+
+def test_harness_mcp_server_list_tools_empty_registry(tmp_path: Path) -> None:
+    server = _make_server(ToolRegistry(), tmp_path)
     assert server.list_tools() == []
 
 
-def test_harness_mcp_server_list_tools_non_empty() -> None:
+def test_harness_mcp_server_list_tools_non_empty(tmp_path: Path) -> None:
     registry = ToolRegistry()
     registry.register(_make_tool("perception.detect_objects"))
-    server = HarnessMCPServer(registry)
+    server = _make_server(registry, tmp_path)
 
     tools = server.list_tools()
     assert len(tools) == 1
     assert tools[0]["name"] == "perception.detect_objects"
     assert "inputSchema" in tools[0]
-
-
-@pytest.mark.asyncio
-async def test_harness_mcp_server_start_raises_not_implemented() -> None:
-    server = HarnessMCPServer(ToolRegistry())
-    with pytest.raises(NotImplementedError):
-        await server.start()
 
 
 # ---------------------------------------------------------------------------

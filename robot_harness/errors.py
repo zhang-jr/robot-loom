@@ -196,10 +196,14 @@ class SafetyError(HarnessError):
 
 
 class SafetyEnvelopeViolation(SafetyError):  # noqa: N818
-    """Safety check failed.
+    """Safety check refused a command at the pre-dispatch gate.
 
-    This exception MUST NOT be caught and suppressed by any caller.
-    Receipt triggers emergency stop + persistent audit log entry.
+    Pre-dispatch semantics: the refused command never reached hardware, and the
+    envelope has already persisted the audit entry by the time this is raised.
+    It MUST NOT be caught and suppressed by any caller — it propagates to abort
+    the task (the AgentLoop also cancels the turn's sibling in-flight calls).
+    The only sanctioned handling is translating it into an error result at a
+    process boundary without continuing execution (e.g. the reverse MCP server).
     """
 
     def __init__(
@@ -211,6 +215,27 @@ class SafetyEnvelopeViolation(SafetyError):  # noqa: N818
     ) -> None:
         super().__init__(message, **kw)
         self.violated_rules: list[str] = violated_rules or []
+
+
+# ---------------------------------------------------------------------------
+# Channel  — user-facing IO transport (ADR-023)
+# ---------------------------------------------------------------------------
+
+
+class ChannelError(HarnessError):
+    """Channel / user-facing IO transport errors."""
+
+    def __init__(self, message: str, *, channel: str = "", **kw: str) -> None:
+        super().__init__(message, **kw)
+        self.channel = channel
+
+
+class ChannelUnavailable(ChannelError):  # noqa: N818
+    """The target channel is not registered or not reachable."""
+
+
+class ChannelDeliveryFailed(ChannelError):  # noqa: N818
+    """An outbound message could not be delivered through the channel."""
 
 
 # ---------------------------------------------------------------------------

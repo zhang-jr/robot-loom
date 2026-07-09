@@ -9,11 +9,12 @@ from robot_harness.memory.base import MemoryEntry, MemoryHit, MemoryId, MemoryQu
 
 
 class InMemoryEpisodicMemory:
-    """Phase 1 stub: list-backed in-process episodic memory.
+    """List-backed in-process episodic memory stub.
 
-    Episodic memory is append-only (no upsert — each episode is a new entry).
-    Phase 2 will replace this with an adapter to an external memory server.
+    Episodic memory is append-only — no upsert, each episode is a new entry.
     """
+
+    # TODO (ADR-020): replace with an adapter to an external memory server.
 
     def __init__(self) -> None:
         self._log: list[dict[str, Any]] = []

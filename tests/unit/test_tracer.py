@@ -131,10 +131,27 @@ class TestInitFromConfig:
         t.init_from_config(ObservabilityConfig(otel_endpoint=""))
         assert t._otel_tracer is None
 
-    def test_invalid_endpoint_degrades_gracefully(self) -> None:
+    def test_invalid_endpoint_degrades_gracefully(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import opentelemetry.exporter.otlp.proto.http.trace_exporter as otlp_mod
+        from opentelemetry.sdk.trace.export import SpanExportResult
+
+        # Stand in for an unreachable backend: every export fails, but without
+        # real network I/O (a live OTLP exporter would keep retrying at process
+        # exit and leak noise into the whole test run).
+        class _UnreachableExporter:
+            def __init__(self, endpoint: str = "") -> None:
+                pass
+
+            def export(self, spans: object) -> SpanExportResult:
+                return SpanExportResult.FAILURE
+
+            def shutdown(self) -> None:
+                pass
+
+        monkeypatch.setattr(otlp_mod, "OTLPSpanExporter", _UnreachableExporter)
+
         t = Tracer()
         t.configure(io.StringIO())
-        # Bad endpoint — configure_otel should catch and degrade.
         t.configure_otel(endpoint="http://localhost:0/bad")
         # _otel_tracer may be set (OTel SDK doesn't validate eagerly) but
         # tracer must not crash during normal usage.

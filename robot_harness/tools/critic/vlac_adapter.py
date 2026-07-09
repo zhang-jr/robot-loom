@@ -12,10 +12,10 @@ from robot_harness.tools.schema import ToolBackend, ToolSchema
 class VlacCriticTool:
     """Mock VLAC-style progress critic tool.
 
-    Phase 1: always returns "progress" with synthetic confidence.
-    Phase 2: will POST current + reference frames to an external critic server.
+    Currently always returns "progress" with synthetic confidence.
     """
 
+    # TODO (ADR-001): POST current + reference frames to an external critic server.
     name = "critic.judge_progress"
     backend: ToolBackend = "native"
     schema = ToolSchema(

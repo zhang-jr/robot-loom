@@ -9,12 +9,21 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
 from robot_harness.errors import ToolNotFoundError, ToolSchemaViolationError
 from robot_harness.tools.schema import ToolBackend, ToolSchema
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Collection
+
+    from robot_harness.embodiment.base import EmbodimentCommand
+    from robot_harness.tools.artifacts import ArtifactStore
+    from robot_harness.tools.outbound import OutboundHandle
+
+    SafetyCommandBuilder = Callable[[dict[str, Any], "ToolContext"], "EmbodimentCommand | None"]
 
 
 @dataclass
@@ -30,6 +39,14 @@ class ToolContext:
     subtask_id: str = ""
     lease_id: str = ""
     timeout_s: float = 30.0
+    # Out-of-band store for large tool I/O (images, depth). Producing tools put
+    # bytes and return an ArtifactRef; the resolver middleware hydrates refs from
+    # here before dispatch. None when no store is wired (refs are then disabled).
+    artifact_store: ArtifactStore | None = None
+    # Session-bound path back to the user (ADR-023). Set by the AgentLoop from the
+    # originating channel; None for programmatic callers. The send_message tool
+    # delivers through it instead of only tracing.
+    outbound: OutboundHandle | None = None
     _cancel_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
 
     def cancel(self) -> None:
@@ -82,6 +99,27 @@ class Tool(Protocol):
     ``name``, ``schema``, ``backend`` are declared as read-only properties so
     that concrete implementations may satisfy the Protocol with either a plain
     class variable (readable) or an ``@property`` (read-only).
+
+    A tool that actuates the robot also exposes:
+    - ``hardware_bound = True`` — the registry gates it behind SafetyEnvelope.
+    - ``to_safety_command(args, ctx) -> EmbodimentCommand | None`` — maps the
+      call to the high-level command the envelope validates (pose reachability,
+      workspace bounds). Returning None means the call carries no
+      harness-checkable target and the on-robot reflex is authoritative.
+
+    Visibility (orthogonal to ``hardware_bound``):
+    - ``brain_visible = True`` (default) — the tool appears in the spec list the
+      Brain plans over (:meth:`ToolRegistry.export_for_brain`).
+    - ``brain_visible = False`` — the tool stays *registered and invocable* (so a
+      skill can call it via ``get()``, and ``tool list`` still shows it for
+      debugging) but is hidden from the Brain's planning vocabulary. Use this for
+      verb-internal sub-capabilities (grasp-pose estimation, single-step VLA
+      inference) and low-level override dispatch, so the Brain is not tempted to
+      hand-assemble a control pipeline at the slow planning layer.
+
+    ``hardware_bound`` answers "must this pass SafetyEnvelope?"; ``brain_visible``
+    answers "should the Brain see this when planning?" — they cross-cut, so never
+    derive one from the other.
     """
 
     @property
@@ -112,10 +150,13 @@ class ToolFilter(BaseModel):
     tags: list[str] = []
 
 
+BrainProfileName = Literal["openai", "anthropic", "mcp", "litellm"]
+
+
 class BrainProfile(BaseModel):
     """Describes which tool-spec format a Brain backend expects."""
 
-    name: str  # 'openai' | 'anthropic' | 'mcp'
+    name: BrainProfileName
     supports_native_reflection: bool = True  # False → register ReflectionTool
 
 
@@ -131,10 +172,37 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
+        self._safety_gated: dict[str, SafetyCommandBuilder | None] = {}
 
     def register(self, tool: Tool) -> None:
-        """Register a tool; silently overwrites an existing entry with the same name."""
+        """Register a tool; silently overwrites an existing entry with the same name.
+
+        Tools that actuate the robot (``hardware_bound``) are recorded so the
+        AgentLoop runs SafetyEnvelope.check() before invoking them. Overwriting
+        also resets that record — a stale entry would keep gating the name with
+        the REPLACED tool's ``to_safety_command`` (ISS-039).
+        """
+        self._safety_gated.pop(tool.name, None)
+        if getattr(tool, "hardware_bound", False):
+            self._safety_gated[tool.name] = getattr(tool, "to_safety_command", None)
         self._tools[tool.name] = tool
+
+    def requires_safety_check(self, name: str) -> bool:
+        """True if *name* actuates the robot and must pass SafetyEnvelope first."""
+        return name in self._safety_gated
+
+    def build_safety_command(
+        self, name: str, args: dict[str, Any], ctx: ToolContext
+    ) -> EmbodimentCommand | None:
+        """Build the EmbodimentCommand a hardware-bound tool validates against.
+
+        Returns None when the call carries no harness-checkable target; the
+        on-robot safety reflex is then the authoritative check.
+        """
+        builder = self._safety_gated.get(name)
+        if builder is None:
+            return None
+        return builder(args, ctx)
 
     def get(self, name: str) -> Tool:
         """Return the tool or raise :exc:`ToolNotFoundError`."""
@@ -154,12 +222,30 @@ class ToolRegistry:
                 tools = [t for t in tools if pat in t.name.lower()]
         return [t.schema for t in tools]
 
-    def export_for_brain(self, profile: BrainProfile) -> list[BrainToolSpec]:
-        """Export tool specs in the format expected by the Brain backend."""
+    def export_for_brain(
+        self,
+        profile: BrainProfile,
+        *,
+        exclude_names: Collection[str] = (),
+    ) -> list[BrainToolSpec]:
+        """Export tool specs in the format expected by the Brain backend.
+
+        Only tools with ``brain_visible`` (default True) are exported. A tool
+        marked ``brain_visible = False`` stays registered and invocable — skills
+        can still reach it via :meth:`get` — but is hidden from the Brain's
+        planning vocabulary. See :class:`Tool` for when to hide a tool.
+
+        ``exclude_names`` additionally hides the named tools from THIS export
+        only (session-scoped, e.g. on-robot verbs the fleet does not currently
+        advertise — see ``HarnessContext.unavailable_tool_names``). Unlike
+        ``brain_visible`` it is a per-call filter, not a tool property; excluded
+        tools stay registered and invocable. Filtering happens on tool names
+        before serialization, so it is Brain-profile-agnostic.
+        """
         schemas = [
-            tool.schema
-            for tool in self._tools.values()
-            if getattr(tool, "brain_visible", True)
+            t.schema
+            for t in self._tools.values()
+            if getattr(t, "brain_visible", True) and t.name not in exclude_names
         ]
         if profile.name in ("openai", "litellm"):
             return [s.to_openai_function() for s in schemas]

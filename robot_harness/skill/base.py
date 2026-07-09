@@ -6,11 +6,24 @@ call external servers directly — only through ToolRegistry.
 
 from __future__ import annotations
 
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from robot_harness.skill.safety_class import SafetyClass
+
+if TYPE_CHECKING:
+    from typing import Self
+
+    from robot_harness.runtime.harness_context import HarnessContext
+    from robot_harness.tools.base import ToolRegistry
+
+# The Brain-facing input shape every skill call is unpacked with. A custom
+# ``data_schema`` must keep this envelope: the export side hands the schema to
+# the Brain verbatim, while dispatch unconditionally reads these three keys —
+# a flat schema would make the Brain pass flat args that dispatch silently
+# drops. Skill-specific fields belong inside ``parameters``.
+SUBTASK_ENVELOPE_KEYS = frozenset({"robot_id", "description", "parameters"})
 
 
 class SkillManifest(BaseModel):
@@ -45,6 +58,25 @@ class SkillManifest(BaseModel):
             raise ValueError("Skill name must not be empty")
         return v
 
+    @field_validator("data_schema")
+    @classmethod
+    def _data_schema_keeps_subtask_envelope(cls, v: dict[str, Any]) -> dict[str, Any]:
+        if not v:
+            return v
+        if v.get("type") != "object":
+            raise ValueError(
+                "data_schema must be an object-typed JSON Schema (it is exported "
+                "verbatim as the Brain-facing input schema)"
+            )
+        extra = set(v.get("properties", {})) - SUBTASK_ENVELOPE_KEYS
+        if extra:
+            raise ValueError(
+                "data_schema top-level properties must stay within the Subtask "
+                f"envelope {sorted(SUBTASK_ENVELOPE_KEYS)}; skill-specific fields "
+                f"go inside 'parameters'. Offending: {sorted(extra)}"
+            )
+        return v
+
 
 class Subtask(BaseModel):
     """Unit of work assigned to a Skill."""
@@ -67,6 +99,12 @@ class SkillResult(BaseModel):
     message: str = ""
     artifacts: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def _sync_outcome(self) -> Self:
+        if not self.success and self.outcome == "success":
+            self.outcome = "failure"
+        return self
+
 
 class SwapHandle(BaseModel):
     """Returned by hotswap — call rollback() to revert to the previous version."""
@@ -85,17 +123,19 @@ class Skill(Protocol):
     - Must ONLY call tools via ``tools.get(name).invoke(...)``.
     - Must NOT directly import or call external server SDKs.
     - rollback() must restore pre-execution state if feasible.
+
+    Skill selection is the Brain's job: skills enter its planning vocabulary as
+    ``skill.<name>`` callables (SkillRegistry.export_for_brain) and are invoked
+    by name — there is no keyword-routing entry point.
     """
 
     manifest: SkillManifest
 
-    async def can_handle(self, subtask: Subtask, ctx: Any) -> bool: ...
-
     async def execute(
         self,
         subtask: Subtask,
-        tools: Any,  # ToolRegistry — avoid circular import
-        ctx: Any,  # HarnessContext
+        tools: ToolRegistry,
+        ctx: HarnessContext,
     ) -> SkillResult: ...
 
-    async def rollback(self, ctx: Any) -> None: ...
+    async def rollback(self, ctx: HarnessContext) -> None: ...

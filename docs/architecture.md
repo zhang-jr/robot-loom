@@ -52,13 +52,17 @@ Application
    ▼
 ┌────────────────────────────────────────────────────┐
 │ Tool Adapters  (本仓库实现 client，server 外置)     │
-│   ├─ perception/   → YOLO / Depth / SAM / G-DINO   │
-│   ├─ grasp/        → GraspAnything / AnyGrasp      │
+│   ├─ perception/   → slow-loop grounding 感知 only │
+│   │                  (mid-loop 反应式感知下沉本体)  │
+│   ├─ grasp/        → slow-loop hint generator      │
+│   │                  (闭环抓取已下沉到本体动词)     │
 │   ├─ memory/       → SpatialMemory-like server     │
-│   ├─ critic/       → VLAC-like progress critic     │
-│   ├─ vla/          → VLA serving runtime           │
-│   ├─ navigation/   → VLN / WAM / nav planner       │
+│   ├─ critic/       → VLAC-like progress supervisor │
+│   ├─ vla/          → VLA serving (chunked, 非 tick)│
+│   ├─ navigation/   → slow-loop path planning only  │
 │   ├─ robot_sdk/    → per-robot agent_server        │
+│   │                  暴露本体动词 (reactive_grasp / │
+│   │                  visual_servo_to / move_to_pose)│
 │   └─ generic/      → shell / fs / web / message    │
 └────────────────────────────────────────────────────┘
    │
@@ -105,6 +109,10 @@ Skill 是"已验证安全、可版本治理"的组合。
 
 ## 数据流：一次 pick&place 的完整路径
 
+下面的流程符合 ADR-019 的**三层闭环边界**：mid/tight-loop 反应式闭环（视觉伺服、
+grasp 微调、力控反射）完全跑在本体 agent_server 内部，harness 只下高层意图、
+等动词级 `CompletionVerdict`，再由 supervisor critic 做任务级验收。
+
 ```
 用户: "把桌上的杯子放到托盘上"
    │
@@ -116,22 +124,45 @@ Skill 是"已验证安全、可版本治理"的组合。
    │
    ▼ SkillRegistry.get("pick_object")
    │
-   ▼ Skill.execute()
-   │   ├─ tools.get("perception.detect_objects").invoke(...)
-   │   ├─ tools.get("grasp.estimate_pose").invoke(...)
-   │   ├─ SafetyEnvelope.check(cmd)          ← 前置，不可绕过
-   │   ├─ tools.get("robot_sdk.move").invoke(...)
-   │   └─ tools.get("critic.judge").invoke(...)
+   ▼ Skill.execute()  — declarative pick (harness 内)
+   │   ├─ tools.get("perception.ground_phrase").invoke({phrase:"the mug"})
+   │   │   → 产生 target_hint  (slow-loop B 类感知，0.5–7 Hz)
+   │   │
+   │   ├─ SafetyEnvelope.check(高层意图: target_pose + constraints)
+   │   │   → 校验可达性 / 工作空间冲突；紧停反射由本体兜底（ADR-019）
+   │   │
+   │   ├─ tools.get("robot_sdk.reactive_grasp").invoke(
+   │   │       {target_hint, constraints})
+   │   │   → 本体动词 dispatch → 等 CompletionVerdict
+   │   │   ┌─────────────────────────────────────────────────┐
+   │   │   │ 本体 agent_server 内 (harness 看不见):           │
+   │   │   │   30 Hz 视觉伺服 + grasp 在线微调 +              │
+   │   │   │   力/IMU 融合 + 紧停反射                          │
+   │   │   └─────────────────────────────────────────────────┘
+   │   │   → 返回 CompletionVerdict(success/partial/failed,
+   │   │                            robot_state_snapshot)
+   │   │
+   │   └─ tools.get("critic.judge").invoke(frame)
+   │       → 外部 supervisor 视角，看视频帧判定任务级进度
+   │         (与本体 CompletionVerdict 形成对偶，ADR-010 / ADR-019)
    │
-   ▼ Critic 返回 completion / failure / unchanged
+   ▼ ReplanPolicy 决策（本体 verdict + critic verdict + sensor 联合）
+   │   ├─ 双 verdict 一致 → 接受
+   │   ├─ 冲突           → CriticDisagreementError → 追加 critic-feedback 消息重规划
+   │   ├─ completion     → 任务完成，写 EpisodicMemory
+   │   ├─ failure        → 追加 critic-feedback 消息，下一 turn 重规划（ADR-025）
+   │   └─ unchanged      → 超时计数，触发降级
    │
-   ▼ ReplanPolicy 决策（critic + sensor 联合）
-   │   ├─ completion → 任务完成，写 EpisodicMemory
-   │   ├─ failure    → Brain.replan()
-   │   └─ unchanged  → 超时计数，触发降级
-   │
-   ▼ trace 写入 OTel，全链路可观测
+   ▼ trace 写入 OTel，全链路可观测（含 cognitive_scaffold_trail）
 ```
+
+**频率分层（ADR-019）**：
+
+| 闭环 | 频率 | 物理位置 | 在本流程中 |
+|---|---|---|---|
+| Tight | 100–1000 Hz | on-robot | 关节伺服、紧停反射 —— 本体内 |
+| Mid | 5–30 Hz | **on-robot** | 视觉伺服、grasp 微调 —— `reactive_grasp` 内部 |
+| Slow | 0.5–7 Hz | harness | Brain decide / skill 编排 / critic / replan |
 
 ---
 
@@ -182,10 +213,12 @@ class Skill(Protocol):
     async def execute(self, subtask, tools: ToolRegistry, ctx) -> SkillResult: ...
     async def rollback(self, ctx) -> None: ...
 
-# Brain：LLM 决策层
+# Brain：LLM 决策层（原生 tool-use 对话由 AgentLoop 拥有并增长，ADR-025；
+# replan = loop 往同一对话追加 critic-feedback 消息，无独立入口）
 class Brain(Protocol):
-    async def decide(self, task, memory_view, tools) -> BrainDecision: ...
-    async def replan(self, history, critic_signal) -> BrainDecision: ...
+    async def decide(
+        self, messages, tools, *, trace_id="", robot_id=""
+    ) -> BrainDecision: ...
 
 # SafetyEnvelope：前置校验
 class SafetyEnvelope(Protocol):

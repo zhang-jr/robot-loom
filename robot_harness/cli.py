@@ -6,6 +6,7 @@ Commands:
   robot-loom tool list            List registered tools
   robot-loom skill list           List registered skills
   robot-loom fleet status         Show fleet robot IDs from config
+  robot-loom mcp serve            Expose the harness as an MCP server (reverse direction)
 """
 
 from __future__ import annotations
@@ -86,6 +87,24 @@ def _cmd_run(args: argparse.Namespace) -> None:
     asyncio.run(_async_run(args))
 
 
+def _cmd_mcp_serve(args: argparse.Namespace) -> None:
+    from robot_harness.tools.mcp.server import HarnessMCPServer
+
+    ctx = _build_ctx()
+    # Deliberately NO _register_generic_tools here: the reverse MCP server hands
+    # every brain-visible tool to arbitrary external clients, and shell_run /
+    # file-write tools would be an unauthenticated remote-execution surface
+    # (ISS-033). External callers get the robot vocabulary, not host access.
+    server = HarnessMCPServer(
+        ctx.tool_registry,
+        ctx.safety_envelope,
+        default_timeout_s=ctx.config.tool.default_timeout_s,
+    )
+    # stdio transport owns stdout for the MCP protocol — tracer writes to
+    # stderr, so harness logging stays out of band.
+    asyncio.run(server.start(args.transport))
+
+
 async def _async_run(args: argparse.Namespace) -> None:
     from robot_harness.brain.base import Task
     from robot_harness.brain.litellm_brain import LiteLLMBrain
@@ -160,6 +179,17 @@ def main() -> None:
     fleet_sub = fleet_p.add_subparsers(dest="fleet_cmd")
     fleet_sub.add_parser("status", help="Show fleet status")
 
+    mcp_p = sub.add_parser("mcp", help="MCP integration")
+    mcp_sub = mcp_p.add_subparsers(dest="mcp_cmd")
+    serve_p = mcp_sub.add_parser(
+        "serve", help="Expose the harness as an MCP server (reverse direction)"
+    )
+    serve_p.add_argument(
+        "--transport",
+        default="stdio",
+        help='"stdio" (default) or an HTTP bind address like "0.0.0.0:8080"',
+    )
+
     args = parser.parse_args()
 
     if args.command == "init":
@@ -174,6 +204,8 @@ def main() -> None:
         _cmd_skill_validate(args)
     elif args.command == "fleet" and args.fleet_cmd == "status":
         _cmd_fleet_status(args)
+    elif args.command == "mcp" and args.mcp_cmd == "serve":
+        _cmd_mcp_serve(args)
     else:
         parser.print_help()
 

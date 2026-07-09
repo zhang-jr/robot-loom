@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
 import yaml
+from dotenv import load_dotenv
 
 from robot_harness.config.paths import workspace_config_file, workspace_root
 from robot_harness.config.schema import HarnessConfig
@@ -25,25 +25,13 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 def _load_dotenv(path: Path) -> None:
     """Load KEY=VALUE pairs from ``path`` into ``os.environ``.
 
-    Existing env vars are not overridden (matches python-dotenv default).
-    Lines that are blank, comments, or missing ``=`` are skipped.
-    Surrounding single/double quotes are stripped.
+    Delegates to python-dotenv so inline comments (``KEY=val # note``), quoted
+    values, and ``export`` prefixes are parsed correctly. ``override=False``
+    keeps the process's existing env vars authoritative over the file.
     """
     if not path.exists():
         return
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = value.strip()
-        if (value.startswith('"') and value.endswith('"')) or (
-            value.startswith("'") and value.endswith("'")
-        ):
-            value = value[1:-1]
-        if key and key not in os.environ:
-            os.environ[key] = value
+    load_dotenv(path, override=False)
 
 
 def load_config(extra_path: Path | None = None) -> HarnessConfig:

@@ -1,4 +1,4 @@
-"""Tests for SkillRegistry — registration, routing, hotswap, rollback."""
+"""Tests for SkillRegistry — registration, manifest validation, hotswap, rollback."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from robot_harness.errors import (
 from robot_harness.skill.base import SkillManifest, SkillResult, Subtask
 from robot_harness.skill.registry import SkillRegistry
 from robot_harness.skill.safety_class import SafetyClass
+from robot_harness.tools.base import BrainProfile
 
 # ---------------------------------------------------------------------------
 # Minimal Skill fixture
@@ -36,9 +37,6 @@ def _make_skill(name: str = "pick", version: str = "1.0.0", tags: list[str] | No
     s = _S()
     s.manifest = manifest  # type: ignore[attr-defined]
 
-    async def can_handle(subtask: Subtask, ctx: Any) -> bool:
-        return True
-
     async def execute(subtask: Subtask, tools: Any, ctx: Any) -> SkillResult:
         return SkillResult(
             skill_name=name,
@@ -50,7 +48,6 @@ def _make_skill(name: str = "pick", version: str = "1.0.0", tags: list[str] | No
     async def rollback(ctx: Any) -> None:
         pass
 
-    s.can_handle = can_handle  # type: ignore[attr-defined]
     s.execute = execute  # type: ignore[attr-defined]
     s.rollback = rollback  # type: ignore[attr-defined]
     return s
@@ -128,19 +125,49 @@ def test_list_filter_by_embodiment() -> None:
     assert len(manifests) == 1
 
 
-def test_route_by_keyword() -> None:
-    reg = SkillRegistry()
-    reg.register(_make_skill("pick", "1.0.0", tags=["pick"]))
-    skill = reg.route("pick up the cup", ctx=None)
-    assert skill is not None
-    assert skill.manifest.name == "pick"
+def test_flat_data_schema_is_rejected() -> None:
+    """A data_schema whose top-level properties leave the Subtask envelope is
+    rejected at manifest validation: the Brain would pass flat args that
+    dispatch (which unpacks the envelope) silently drops."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="Subtask"):
+        SkillManifest(
+            name="flat",
+            version="1.0.0",
+            data_schema={
+                "type": "object",
+                "properties": {"object_name": {"type": "string"}},  # flat — not allowed
+            },
+        )
 
 
-def test_route_no_match_returns_none() -> None:
+def test_non_object_data_schema_is_rejected() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="object-typed"):
+        SkillManifest(name="arr", version="1.0.0", data_schema={"type": "array"})
+
+
+def test_envelope_shaped_data_schema_is_exported_verbatim() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "robot_id": {"type": "string"},
+            "parameters": {
+                "type": "object",
+                "properties": {"target_pose": {"type": "array"}},
+                "required": ["target_pose"],
+            },
+        },
+        "required": ["robot_id", "parameters"],
+    }
+    skill = _make_skill("shaped", "1.0.0")
+    skill.manifest = skill.manifest.model_copy(update={"data_schema": schema})
     reg = SkillRegistry()
-    reg.register(_make_skill("pick", "1.0.0", tags=["pick"]))
-    skill = reg.route("navigate to kitchen", ctx=None)
-    assert skill is None
+    reg.register(skill)
+    (spec,) = reg.export_for_brain(BrainProfile(name="openai"))
+    assert spec["function"]["parameters"] == schema
 
 
 def test_invalid_manifest_version_raises_on_register() -> None:

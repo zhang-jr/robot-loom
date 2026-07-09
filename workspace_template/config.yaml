@@ -53,8 +53,49 @@ tool:
 # ---------------------------------------------------------------------------
 safety:
   enabled: true
-  max_joint_velocity_rad_s: 1.0
+  # Symmetric per-joint position limits in radians, one per joint ("joint"
+  # command values are target positions). Omit / leave empty until you know
+  # your arm's limits — joint targets are then recorded as "skipped" in the
+  # safety audit and the on-robot runtime's own limits are authoritative.
+  # joint_limits_rad: [3.14, 2.0, 2.7, 3.14, 2.0, 3.14]
+  # Per-axis cap for "delta" commands (meters/radians per step). Omit / 0.0 =
+  # unchecked (honest "skipped" audit).
+  # max_delta_step: 0.25
   workspace_bounds_m: [-2.0, -2.0, 0.0, 2.0, 2.0, 2.0]   # [xmin ymin zmin xmax ymax zmax]
+  # Map-frame geofence for locomotion goals: [xmin ymin xmax ymax] (meters).
+  # Omit / leave empty when the site is unmapped — locomotion goals are then
+  # recorded as "skipped" in the safety audit and the on-robot nav stack is
+  # authoritative. Set it as soon as you have a map.
+  # map_bounds_m: [-10.0, -10.0, 10.0, 10.0]
+
+# ---------------------------------------------------------------------------
+# Memory backend.
+#   null     — nothing is stored; queries return empty.
+#   embedded — in-process store; not shared across robots, lost on restart.
+#   external — remote server over HTTP; shared across robots, durable.
+#              Set server_url and use this for any fleet_size > 1.
+# ---------------------------------------------------------------------------
+memory:
+  backend: embedded
+  server_url: ""                # required when backend: external
+  request_timeout_s: 10.0
+
+# ---------------------------------------------------------------------------
+# External capability servers.
+#
+# Endpoints of independently deployed capability servers the harness connects
+# to as a client. Server URLs are deployment topology, not secrets — they
+# belong here (trackable in git), while API keys belong in `.env`.
+#
+#   perception — MCP URL of a perception server publishing the perception.*
+#                tool set (detect / depth / ground / segment). Leave empty to
+#                run without perception tools.
+#
+# Memory and per-robot agent_server / sim endpoints have their own sections
+# (`memory.server_url`, `embodiments.<robot_id>.server_url`).
+# ---------------------------------------------------------------------------
+tool_servers:
+  perception: ""                # e.g. http://localhost:7100/mcp
 
 # ---------------------------------------------------------------------------
 # Observability.
@@ -72,3 +113,30 @@ observability:
 fleet_size: 1
 robot_ids:
   - robot-0
+
+# ---------------------------------------------------------------------------
+# Embodiment backends (ADR-009 / ADR-021), keyed by robot_id.
+#
+# A simulator is an embodiment backend, NOT a tool: it plays the role of
+# "per-robot agent_server + hardware". Switching a robot between real hardware
+# and a MuJoCo / Isaac Lab sim is a config change only — Brain / Skill / Critic
+# code never changes. Robots omitted here fall back to an in-process mock.
+#
+#   backend:      mock | agent_server | sim
+#     mock         — in-process stub; no network. Dev / CI default.
+#     agent_server — real per-robot HTTP/WS agent_server (needs server_url).
+#     sim          — external MuJoCo / Isaac Lab agent_server (sim runtime runs
+#                    out-of-process; harness holds only the client). The sim
+#                    runtime lives in a sibling repo, not in this one.
+#   sim_engine:   mujoco | isaac   (only used when backend: sim)
+#   server_url:   defaults to localhost:8810 (mujoco) / :8811 (isaac) if empty
+#
+# A runnable reference MuJoCo server: examples/sim_servers/mujoco_agent_server.py
+# ---------------------------------------------------------------------------
+embodiments: {}
+  # robot-0:
+  #   backend: sim
+  #   sim_engine: mujoco
+  #   robot_type: arm
+  #   dof: 6
+  #   server_url: http://localhost:8810

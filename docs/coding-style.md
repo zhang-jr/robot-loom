@@ -276,7 +276,7 @@ async def invoke(self, args: dict, ctx: ToolContext) -> ToolResult:
 ```
 tools/perception/mcp_bundle.py      # 小写 + 下划线
 skill/builtin/pick.py
-embodiment/arm/generic_6dof.py
+embodiment/sim/mujoco_adapter.py
 ```
 
 ### 类名

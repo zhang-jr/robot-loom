@@ -48,6 +48,13 @@ class ToolMiddleware:
     async def cancel(self, ctx: ToolContext) -> None:
         await self._inner.cancel(ctx)
 
+    def __getattr__(self, item: str) -> Any:
+        # Forward capability markers (hardware_bound, to_safety_command,
+        # brain_visible, …) the base class does not model: wrapping a tool must
+        # never strip them — a middleware-wrapped hardware tool that lost
+        # ``hardware_bound`` would silently bypass the SafetyEnvelope gate.
+        return getattr(self._inner, item)
+
 
 def build_chain(tool: Tool, middleware_classes: list[type[ToolMiddleware]]) -> Tool:
     """Wrap *tool* with *middleware_classes*, outermost first."""

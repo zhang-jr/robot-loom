@@ -9,11 +9,13 @@ from robot_harness.memory.base import MemoryEntry, MemoryHit, MemoryId, MemoryQu
 
 
 class InMemorySemanticMemory:
-    """Phase 1 stub: dict-backed in-process semantic memory.
+    """Dict-backed in-process semantic memory stub.
 
     Uses simple substring matching as a stand-in for embedding search.
-    Phase 2 will replace with a Qdrant/Milvus/FAISS-backed adapter.
     """
+
+    # TODO (ADR-020): replace with a Qdrant/Milvus/FAISS-backed adapter when a
+    # real semantic memory service is available.
 
     def __init__(self) -> None:
         self._store: dict[str, dict[str, Any]] = {}

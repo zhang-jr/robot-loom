@@ -10,14 +10,7 @@ from __future__ import annotations
 
 import asyncio
 
-from robot_harness.brain.base import (
-    BrainDecision,
-    CriticSignal,
-    ExecutionHistory,
-    MemoryView,
-    Task,
-    ToolCallRequest,
-)
+from robot_harness.brain.base import BrainDecision, Task, ToolCallRequest
 from robot_harness.runtime.agent_loop import AgentLoop
 from robot_harness.runtime.harness_context import HarnessContext
 from robot_harness.tools.base import BrainProfile
@@ -42,10 +35,15 @@ class LongHorizonMockBrain:
     def __init__(self) -> None:
         self._turn = 0
 
-    async def decide(self, task: Task, memory_view: MemoryView, tools: list) -> BrainDecision:
+    async def decide(self, messages: list, tools: list, **_: object) -> BrainDecision:  # type: ignore[type-arg]
         self._turn += 1
 
         if self._turn == 1:
+            # Read the goal from the task message the loop placed in the conversation.
+            goal = next(
+                (m.get("content", "") for m in messages if m.get("role") == "user"),
+                "the assigned task",
+            )
             # Write the full plan on the first turn
             steps = [
                 {"id": str(i + 1), "description": name, "status": "pending"}
@@ -56,7 +54,7 @@ class LongHorizonMockBrain:
                 tool_calls=[
                     ToolCallRequest(
                         tool_name="plan",
-                        args={"goal": task.description, "steps": steps},
+                        args={"goal": goal, "steps": steps},
                         call_id="plan_init",
                     )
                 ],
@@ -90,9 +88,6 @@ class LongHorizonMockBrain:
             plan="All 6 subtasks completed successfully.",
             message="Long-horizon task complete.",
         )
-
-    async def replan(self, history: ExecutionHistory, critic_signal: CriticSignal) -> BrainDecision:
-        return BrainDecision(decision_type="give_up", message="replan not needed in example")
 
     @property
     def supports_streaming(self) -> bool:
