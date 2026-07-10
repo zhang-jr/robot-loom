@@ -3,6 +3,7 @@
 Commands:
   robot-loom init                 Initialise a workspace in ~/.robot-loom/workspace/
   robot-loom run --task TEXT      Run a task with the configured Brain
+  robot-loom serve                Run resident: channels (CLI / Telegram) → AgentLoop
   robot-loom tool list            List registered tools
   robot-loom skill list           List registered skills
   robot-loom fleet status         Show fleet robot IDs from config
@@ -18,7 +19,7 @@ import shutil
 import sys
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from robot_harness.runtime.harness_context import HarnessContext
@@ -84,6 +85,64 @@ def _cmd_fleet_status(args: argparse.Namespace) -> None:
 
 def _cmd_run(args: argparse.Namespace) -> None:
     asyncio.run(_async_run(args))
+
+
+def _cmd_serve(args: argparse.Namespace) -> None:
+    try:
+        asyncio.run(_async_serve(args))
+    except KeyboardInterrupt:
+        print("\n[robot-loom] serve stopped.", file=sys.stderr)  # noqa: T201
+
+
+def _build_channel(name: str, robot_id: str) -> Any:
+    """Construct one channel by name. Telegram needs TELEGRAM_BOT_TOKEN set."""
+    if name == "cli":
+        from robot_harness.channels.cli import CLIChannel
+
+        return CLIChannel(robot_id=robot_id)
+    if name == "telegram":
+        from robot_harness.channels.telegram import TelegramChannel
+
+        return TelegramChannel(robot_id=robot_id)
+    raise ValueError(f"unknown channel: {name!r}")
+
+
+async def _async_serve(args: argparse.Namespace) -> None:
+    from robot_harness.brain.base import Task
+    from robot_harness.brain.litellm_brain import LiteLLMBrain
+    from robot_harness.channels.manager import ChannelManager
+    from robot_harness.runtime.agent_loop import AgentLoop
+
+    ctx = _build_ctx()
+
+    channel_names = list(dict.fromkeys(args.channel or ["cli"]))
+    # Host tools (shell / fs) only when every serve surface is the local
+    # terminal. A Telegram bot is reachable by anyone who finds it — handing
+    # it shell_run would be a remote-execution surface, same reasoning as the
+    # reverse MCP server (ISS-033). Remote users get the robot vocabulary.
+    if channel_names == ["cli"]:
+        _register_generic_tools(ctx)
+
+    brain = LiteLLMBrain(ctx.config.brain)
+    robot_id = args.robot_id or (ctx.config.robot_ids[0] if ctx.config.robot_ids else "robot-0")
+
+    async def agent_loop_factory(task: Task, *, outbound: Any) -> Any:
+        loop = AgentLoop(brain, ctx, max_turns=args.max_turns)
+        return await loop.run(task, outbound=outbound)
+
+    manager = ChannelManager(agent_loop_factory)
+    for name in channel_names:
+        manager.register(_build_channel(name, robot_id))
+
+    print(  # noqa: T201
+        f"[robot-loom] serving channels={channel_names} robot={robot_id} "
+        f"brain={ctx.config.brain.model} (Ctrl+C to stop)",
+        file=sys.stderr,
+    )
+    try:
+        await manager.start()
+    finally:
+        await manager.stop()
 
 
 def _cmd_mcp_serve(args: argparse.Namespace) -> None:
@@ -156,6 +215,23 @@ def main() -> None:
     run_p.add_argument("--robot-id", default="", help="Robot ID (defaults to first in config)")
     run_p.add_argument("--max-turns", type=int, default=20)
 
+    serve_run_p = sub.add_parser(
+        "serve", help="Run resident: route channel messages to the AgentLoop"
+    )
+    serve_run_p.add_argument(
+        "--channel",
+        action="append",
+        choices=["cli", "telegram"],
+        help="Channel to serve; repeatable (default: cli). "
+        "telegram reads TELEGRAM_BOT_TOKEN from the environment.",
+    )
+    serve_run_p.add_argument(
+        "--robot-id",
+        default="",
+        help="Robot ID messages are routed to (defaults to first in config)",
+    )
+    serve_run_p.add_argument("--max-turns", type=int, default=20)
+
     tool_p = sub.add_parser("tool", help="Tool management")
     tool_sub = tool_p.add_subparsers(dest="tool_cmd")
     tool_sub.add_parser("list", help="List registered tools")
@@ -187,6 +263,8 @@ def main() -> None:
         _cmd_init(args)
     elif args.command == "run":
         _cmd_run(args)
+    elif args.command == "serve":
+        _cmd_serve(args)
     elif args.command == "tool" and args.tool_cmd == "list":
         _cmd_tool_list(args)
     elif args.command == "skill" and args.skill_cmd == "list":
