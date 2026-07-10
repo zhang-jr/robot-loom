@@ -225,8 +225,7 @@ class LiteLLMBrain:
                     assistant_message=assistant_message,
                 )
             return BrainDecision(
-                decision_type="plan",
-                plan=text,
+                decision_type="respond",
                 message=text,
                 trace_id=trace_id,
                 assistant_message=assistant_message,

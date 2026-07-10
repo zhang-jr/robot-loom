@@ -141,7 +141,10 @@ async def test_ask_user_resumes_after_reply() -> None:
     brain = _MockBrain(
         [
             BrainDecision(decision_type="ask_user", message="which cup?"),
-            BrainDecision(decision_type="plan", message="done"),
+            # First respond has zero tool calls → the loop nudges once; the
+            # second respond is accepted as final.
+            BrainDecision(decision_type="respond", message="done"),
+            BrainDecision(decision_type="respond", message="done"),
         ]
     )
     out = _FakeOutbound(replies=["the red one"])

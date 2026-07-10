@@ -84,9 +84,8 @@ class LongHorizonMockBrain:
 
         # All steps done — signal completion
         return BrainDecision(
-            decision_type="plan",
-            plan="All 6 subtasks completed successfully.",
-            message="Long-horizon task complete.",
+            decision_type="respond",
+            message="Long-horizon task complete: all 6 subtasks finished.",
         )
 
     @property

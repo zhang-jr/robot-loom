@@ -129,20 +129,20 @@ async def test_brain_decide_multiple_tool_calls() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tests: LiteLLMBrain — plan path (text response, no tool calls)
+# Tests: LiteLLMBrain — respond path (text response, no tool calls)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_brain_decide_returns_plan_on_text_response() -> None:
+async def test_brain_decide_returns_respond_on_text_response() -> None:
     brain = LiteLLMBrain(BrainConfig(model="openai/gpt-4o"))
     fake = _text_response("Step 1: perceive. Step 2: grasp.")
 
     with patch("litellm.acompletion", new=AsyncMock(return_value=fake)):
         decision = await brain.decide(_messages(), [])
 
-    assert decision.decision_type == "plan"
-    assert "Step 1" in decision.plan
+    assert decision.decision_type == "respond"
+    assert "Step 1" in decision.message
 
 
 @pytest.mark.asyncio

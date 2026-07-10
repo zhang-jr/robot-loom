@@ -52,9 +52,8 @@ class BrainDecision(BaseModel):
     results that answered it. The loop synthesizes one if the Brain leaves it None.
     """
 
-    decision_type: Literal["tool_call", "plan", "give_up", "ask_user"]
+    decision_type: Literal["tool_call", "respond", "give_up", "ask_user"]
     tool_calls: list[ToolCallRequest] = Field(default_factory=list)
-    plan: str = ""
     message: str = ""
     trace_id: str = ""
     assistant_message: Message | None = None

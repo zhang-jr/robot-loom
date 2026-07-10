@@ -64,6 +64,12 @@ conversation (e.g. where an object was seen in an earlier task, why a past attem
 failed) — don't re-query for what you can already see.
 """
 
+_NUDGE_PROMPT = """\
+You ended your turn without calling any tools, and no tools have been run for this \
+task yet. If completing the task requires action or verification, proceed now using \
+the available tools — do not just describe a plan. If the task genuinely requires no \
+tool use, restate your final answer."""
+
 
 class AgentResult(BaseModel):
     """Final outcome of an AgentLoop.run() call."""
@@ -145,6 +151,7 @@ class AgentLoop:
         messages = self._initial_messages(task, trace_id)
         replan_count = 0
         ask_count = 0
+        nudged = False
         sensor = SensorHeuristic()
         replan_policy = ReplanPolicy()
         active_critic = self._critic
@@ -183,8 +190,24 @@ class AgentLoop:
                 await self._write_episode(task, result, trace_id)
                 return result
 
-            if decision.decision_type == "plan":
-                tracer.event("agent_loop.plan", trace_id=trace_id, plan=decision.plan[:200])
+            if decision.decision_type == "respond":
+                # A text-only turn is the terminal signal — but a respond before
+                # ANY tool has run is suspicious (the model may be narrating a
+                # plan instead of executing it). Nudge once; a second respond,
+                # or one after tools have run, is accepted as final.
+                if not all_tool_results and not nudged:
+                    nudged = True
+                    tracer.event(
+                        "agent_loop.nudge",
+                        trace_id=trace_id,
+                        robot_id=task.robot_id,
+                        message=decision.message[:200],
+                    )
+                    messages.append({"role": "user", "content": _NUDGE_PROMPT})
+                    continue
+                tracer.event(
+                    "agent_loop.respond", trace_id=trace_id, message=decision.message[:200]
+                )
                 result = AgentResult(
                     task_id=task.task_id,
                     robot_id=task.robot_id,
@@ -434,7 +457,7 @@ class AgentLoop:
                     for tc in decision.tool_calls
                 ],
             }
-        return {"role": "assistant", "content": decision.message or decision.plan or ""}
+        return {"role": "assistant", "content": decision.message or ""}
 
     def _tool_message(self, call_id: str, result: dict[str, Any]) -> Message:
         """Render one tool result as a native ``role:tool`` message. Blobs are

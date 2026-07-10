@@ -134,7 +134,7 @@ class _HandoffBrain:
                     )
                 ],
             )
-        return BrainDecision(decision_type="plan", message="no frame ref recalled")
+        return BrainDecision(decision_type="respond", message="no frame ref recalled")
 
 
 @pytest.mark.asyncio

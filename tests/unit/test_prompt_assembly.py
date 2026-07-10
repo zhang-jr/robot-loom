@@ -109,7 +109,7 @@ class _CapturingBrain:
 
     async def decide(self, messages: list[Any], tools: list[Any], **_: Any) -> BrainDecision:
         self.seen_messages = list(messages)
-        return BrainDecision(decision_type="plan", message="done")
+        return BrainDecision(decision_type="respond", message="done")
 
 
 def _task() -> Task:
