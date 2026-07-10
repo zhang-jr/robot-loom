@@ -26,6 +26,7 @@ from typing import Any, Literal, cast
 from pydantic import BaseModel, Field
 
 from robot_harness.brain.base import Brain, BrainDecision, Message, Task, ToolCallRequest
+from robot_harness.brain.prompt_assembly import workspace_prompt_overlay
 from robot_harness.critic.base import Critic, CriticVerdict
 from robot_harness.critic.heuristic_fallback import HeuristicCritic
 from robot_harness.critic.replan_policy import ReplanPolicy, SensorHeuristic
@@ -141,7 +142,7 @@ class AgentLoop:
         )
         all_tool_results: list[dict[str, Any]] = []
         # The loop owns the conversation (ADR-025); it grows across turns.
-        messages = self._initial_messages(task)
+        messages = self._initial_messages(task, trace_id)
         replan_count = 0
         ask_count = 0
         sensor = SensorHeuristic()
@@ -358,14 +359,23 @@ class AgentLoop:
     # Conversation helpers (native tool-use message protocol, ADR-025)
     # ------------------------------------------------------------------
 
-    def _initial_messages(self, task: Task) -> list[Message]:
+    def _initial_messages(self, task: Task, trace_id: str = "") -> list[Message]:
         """Build the opening ``[system, user]`` conversation for a task.
+
+        The system turn is the static harness prompt plus the workspace standing
+        context (MISSION.md / ROBOT.md, ADR-035) — operator-authored prose the
+        Brain needs for grounding (site semantics, standing orders) that the
+        harness cannot discover and that is not runtime state (which is Memory's).
 
         Any cognitive scaffold (a plan/reflection set before the loop) is injected
         into the opening user turn. During the task, plan/reflection updates are
         visible via their tool results already in the conversation; re-injection is
         only for the opening turn (and, later, post-compression recovery, ADR-018).
         """
+        system = _SYSTEM_PROMPT
+        overlay = workspace_prompt_overlay(trace_id=trace_id)
+        if overlay:
+            system = f"{_SYSTEM_PROMPT}\n\n{overlay}"
         sections = [f"Task: {task.description}"]
         if task.constraints:
             sections.append(f"Constraints: {'; '.join(task.constraints)}")
@@ -373,7 +383,7 @@ class AgentLoop:
         if scaffold:
             sections.append(scaffold)
         return [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": system},
             {"role": "user", "content": "\n\n".join(sections)},
         ]
 

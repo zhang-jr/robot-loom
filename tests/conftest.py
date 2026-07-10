@@ -5,8 +5,24 @@ from __future__ import annotations
 import base64
 import struct
 import zlib
+from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def tmp_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point ROBOT_LOOM_WORKSPACE at a per-test temp dir (autouse).
+
+    Workspace files are user assets read at runtime — config.yaml by the config
+    loader, MISSION.md / ROBOT.md by the system-prompt overlay (ADR-035). Tests
+    must not depend on (or mutate) the developer's real ~/.robot-loom/workspace.
+    Tests that need workspace content request this fixture and write into it.
+    """
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    monkeypatch.setenv("ROBOT_LOOM_WORKSPACE", str(ws))
+    return ws
 
 
 def _png_chunk(tag: bytes, payload: bytes) -> bytes:
