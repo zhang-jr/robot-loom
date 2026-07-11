@@ -96,14 +96,64 @@ def _make_task(robot_id: str = "r0") -> Task:
 
 
 @pytest.mark.asyncio
-async def test_brain_returns_plan_immediately() -> None:
-    decision = BrainDecision(decision_type="plan", message="All done!")
-    brain = _MockBrain([decision])
+async def test_respond_before_any_tool_is_nudged_once() -> None:
+    """A text-only respond before ANY tool has run gets one nudge turn; a
+    second respond is then accepted as final."""
+    decisions = [
+        BrainDecision(decision_type="respond", message="My plan is: 1. look 2. grasp"),
+        BrainDecision(decision_type="respond", message="All done!"),
+    ]
+    brain = _MockBrain(decisions)
     ctx = _make_ctx()
     loop = AgentLoop(brain, ctx, max_turns=5)
     result = await loop.run(_make_task())
     assert result.outcome == "success"
-    assert result.turns == 1
+    assert result.turns == 2
+    assert result.message == "All done!"
+
+
+@pytest.mark.asyncio
+async def test_nudge_appends_user_turn_and_fires_only_once() -> None:
+    """The nudge is a user message appended to the same conversation (ADR-025),
+    and it fires at most once per task."""
+    brain = _CapturingBrain(
+        [
+            BrainDecision(decision_type="respond", message="here is my plan"),
+            BrainDecision(decision_type="respond", message="done"),
+        ]
+    )
+    loop = AgentLoop(brain, _make_ctx(), max_turns=5)
+    result = await loop.run(_make_task())
+    assert result.outcome == "success"
+    # Second decide() saw: system, task, assistant(respond), nudge user turn.
+    second = brain.seen_messages[1]
+    assert second[-1]["role"] == "user"
+    assert "without calling any tools" in second[-1]["content"]
+    assert len(brain.seen_messages) == 2  # no second nudge
+
+
+@pytest.mark.asyncio
+async def test_nudged_brain_can_recover_with_tool_calls() -> None:
+    """After the nudge the Brain may switch to tool calls; the eventual respond
+    (tools now run) terminates without another nudge."""
+    from robot_harness.brain.base import ToolCallRequest
+
+    decisions = [
+        BrainDecision(decision_type="respond", message="I will call mock_tool"),
+        BrainDecision(
+            decision_type="tool_call",
+            tool_calls=[ToolCallRequest(tool_name="mock_tool", args={})],
+        ),
+        BrainDecision(decision_type="respond", message="executed"),
+    ]
+    mock_tool = _MockTool()
+    ctx = _make_ctx()
+    ctx.tool_registry.register(mock_tool)
+    loop = AgentLoop(_MockBrain(decisions), ctx, max_turns=5)
+    result = await loop.run(_make_task())
+    assert result.outcome == "success"
+    assert mock_tool.invoke_count == 1
+    assert result.turns == 3
 
 
 @pytest.mark.asyncio
@@ -118,17 +168,17 @@ async def test_brain_gives_up() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tool_call_then_plan() -> None:
+async def test_tool_call_then_respond() -> None:
     from robot_harness.brain.base import ToolCallRequest
 
     tool_call_decision = BrainDecision(
         decision_type="tool_call",
         tool_calls=[ToolCallRequest(tool_name="mock_tool", args={})],
     )
-    plan_decision = BrainDecision(decision_type="plan", message="Done after tool call")
+    respond_decision = BrainDecision(decision_type="respond", message="Done after tool call")
 
     mock_tool = _MockTool()
-    brain = _MockBrain([tool_call_decision, plan_decision])
+    brain = _MockBrain([tool_call_decision, respond_decision])
     ctx = _make_ctx()
     ctx.tool_registry.register(mock_tool)
 
@@ -158,7 +208,7 @@ class _CapturingBrain:
         d = (
             self._decisions[self._i]
             if self._i < len(self._decisions)
-            else BrainDecision(decision_type="plan", message="done")
+            else BrainDecision(decision_type="respond", message="done")
         )
         self._i += 1
         return d
@@ -207,7 +257,9 @@ async def test_observations_flow_back_as_tool_messages_next_turn() -> None:
         decision_type="tool_call",
         tool_calls=[ToolCallRequest(tool_name="perception.detect", args={})],
     )
-    brain = _CapturingBrain([detect_call, BrainDecision(decision_type="plan", message="seen it")])
+    brain = _CapturingBrain(
+        [detect_call, BrainDecision(decision_type="respond", message="seen it")]
+    )
     ctx = HarnessContext.build(memory=SpatialHubMemory())
     ctx.tool_registry.register(_DetectTool())
 
@@ -290,7 +342,9 @@ async def test_call_ids_synced_into_assistant_message() -> None:
             ],
         },
     )
-    brain = _CapturingBrain([no_id_decision, BrainDecision(decision_type="plan", message="done")])
+    brain = _CapturingBrain(
+        [no_id_decision, BrainDecision(decision_type="respond", message="done")]
+    )
     ctx = _make_ctx()
     ctx.tool_registry.register(_MockTool())
 
@@ -342,7 +396,7 @@ async def test_brain_receives_trace_context() -> None:
 
         async def decide(self, messages: list[Any], tools: list[Any], **kw: str) -> BrainDecision:
             self.kwargs = dict(kw)
-            return BrainDecision(decision_type="plan", message="done")
+            return BrainDecision(decision_type="respond", message="done")
 
     brain = _CtxCapturingBrain()
     ctx = _make_ctx()
@@ -361,7 +415,7 @@ async def test_unknown_tool_returns_error_result() -> None:
         decision_type="tool_call",
         tool_calls=[ToolCallRequest(tool_name="nonexistent_tool", args={})],
     )
-    plan = BrainDecision(decision_type="plan", message="ok")
+    plan = BrainDecision(decision_type="respond", message="ok")
 
     brain = _MockBrain([decision, plan])
     ctx = _make_ctx()
@@ -400,7 +454,7 @@ async def test_critic_frame_fetch_failure_skips_supervision_not_task() -> None:
             decision_type="tool_call",
             tool_calls=[ToolCallRequest(tool_name="mock_tool", args={})],
         ),
-        BrainDecision(decision_type="plan", message="done"),
+        BrainDecision(decision_type="respond", message="done"),
     ]
     ctx = _make_ctx()
     ctx.tool_registry.register(_MockTool())
@@ -517,7 +571,7 @@ async def test_untyped_tool_exception_becomes_failed_result() -> None:
             decision_type="tool_call",
             tool_calls=[ToolCallRequest(tool_name="buggy_tool", args={})],
         ),
-        BrainDecision(decision_type="plan", message="recovered"),
+        BrainDecision(decision_type="respond", message="recovered"),
     ]
     ctx = _make_ctx()
     ctx.tool_registry.register(_BuggyTool())
@@ -548,7 +602,7 @@ async def test_untyped_skill_exception_becomes_failed_result() -> None:
             decision_type="tool_call",
             tool_calls=[ToolCallRequest(tool_name="skill.boom", args={"robot_id": "r0"})],
         ),
-        BrainDecision(decision_type="plan", message="recovered"),
+        BrainDecision(decision_type="respond", message="recovered"),
     ]
     ctx = _make_ctx()
     ctx.skill_registry.register(_BoomSkill())
@@ -583,7 +637,7 @@ async def test_missing_required_args_fail_before_dispatch() -> None:
             decision_type="tool_call",
             tool_calls=[ToolCallRequest(tool_name="strict_tool", args={})],
         ),
-        BrainDecision(decision_type="plan", message="done"),
+        BrainDecision(decision_type="respond", message="done"),
     ]
     ctx = _make_ctx()
     ctx.tool_registry.register(strict)
@@ -626,7 +680,7 @@ async def test_hung_tool_hits_loop_backstop_deadline() -> None:
             decision_type="tool_call",
             tool_calls=[ToolCallRequest(tool_name="hanging_tool", args={})],
         ),
-        BrainDecision(decision_type="plan", message="recovered"),
+        BrainDecision(decision_type="respond", message="recovered"),
     ]
     cfg = HarnessConfig(tool=ToolConfig(default_timeout_s=0.3))
     ctx = HarnessContext.build(config=cfg)

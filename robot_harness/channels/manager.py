@@ -53,6 +53,11 @@ class ChannelManager:
 
         tasks = [self._drain(ch) for ch in self._channels.values()]
         await asyncio.gather(*tasks)
+        # All listeners have closed (e.g. stdin EOF). In-flight message handlers
+        # still hold undelivered responses — finish them before returning, or a
+        # one-shot piped invocation exits with the reply cancelled mid-Task.
+        while self._tasks:
+            await asyncio.gather(*list(self._tasks))
 
     async def stop(self) -> None:
         self._running = False

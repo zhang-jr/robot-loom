@@ -55,7 +55,7 @@ class ScriptedBrain:
                     )
                 ],
             ),
-            BrainDecision(decision_type="plan", message="picked up the cube"),
+            BrainDecision(decision_type="respond", message="picked up the cube"),
         ]
         self._i = 0
 

@@ -141,7 +141,10 @@ async def test_ask_user_resumes_after_reply() -> None:
     brain = _MockBrain(
         [
             BrainDecision(decision_type="ask_user", message="which cup?"),
-            BrainDecision(decision_type="plan", message="done"),
+            # First respond has zero tool calls → the loop nudges once; the
+            # second respond is accepted as final.
+            BrainDecision(decision_type="respond", message="done"),
+            BrainDecision(decision_type="respond", message="done"),
         ]
     )
     out = _FakeOutbound(replies=["the red one"])
@@ -219,3 +222,32 @@ async def test_send_to_unregistered_channel_raises() -> None:
     manager = ChannelManager(_FakeFactory())
     with pytest.raises(ChannelUnavailable):
         await manager.send(ChannelOrigin(channel="nope", user_id="u1"), "hi")
+
+
+@pytest.mark.asyncio
+async def test_start_awaits_in_flight_handlers_after_listeners_close() -> None:
+    """One-shot piped input: the listener closes right after its only message.
+
+    start() must finish the in-flight handler (and deliver its response) before
+    returning, not exit with the Task cancelled mid-flight.
+    """
+
+    class _OneShotChannel(_FakeChannel):
+        async def listen(self) -> AsyncIterator[ChannelMessage]:
+            yield ChannelMessage(channel="fake", user_id="u1", text="do it")
+            # generator ends immediately — stdin EOF
+
+    class _SlowFactory(_FakeFactory):
+        async def __call__(self, task: Task, *, outbound: Any) -> AgentResult:
+            await asyncio.sleep(0.05)  # still running when the listener closes
+            return await super().__call__(task, outbound=outbound)
+
+    factory = _SlowFactory()
+    manager = ChannelManager(factory)
+    channel = _OneShotChannel()
+    manager.register(channel)
+
+    await manager.start()
+
+    assert len(factory.calls) == 1
+    assert [r.text for r in channel.sent] == ["ok"]

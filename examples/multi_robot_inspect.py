@@ -67,8 +67,7 @@ class InspectMockBrain:
 
     async def decide(self, messages: list, tools: list, **_: object) -> BrainDecision:  # type: ignore[type-arg]
         return BrainDecision(
-            decision_type="plan",
-            plan=f"Inspection '{self._subtask.subtask_id}' complete.",
+            decision_type="respond",
             message=f"{self._subtask.description}: OK",
         )
 

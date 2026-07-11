@@ -108,7 +108,7 @@ class ScriptedBrain:
                 "robot_sdk.reactive_grasp",
                 {"robot_id": _ROBOT_ID, "target_hint": {"kind": "object_id", "object_id": "cube"}},
             ),
-            BrainDecision(decision_type="plan", message="picked up the detected cube"),
+            BrainDecision(decision_type="respond", message="picked up the detected cube"),
         ]
         self._i = 0
 

@@ -61,7 +61,7 @@ class ScriptedBrain:
             _action([0.10, 0.20, 0.10]),
             _action([0.25, 0.10, 0.20]),
             _action([0.05, 0.30, 0.15]),
-            BrainDecision(decision_type="plan", message="reached target configuration"),
+            BrainDecision(decision_type="respond", message="reached target configuration"),
         ]
         self._i = 0
 

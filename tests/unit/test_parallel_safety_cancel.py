@@ -38,7 +38,7 @@ class _OneTurnBrain:
 
     async def decide(self, messages: list[Any], tools: list[Any], **_: Any) -> BrainDecision:
         if self._done:
-            return BrainDecision(decision_type="plan", message="done")
+            return BrainDecision(decision_type="respond", message="done")
         self._done = True
         return BrainDecision(decision_type="tool_call", tool_calls=self._calls)
 

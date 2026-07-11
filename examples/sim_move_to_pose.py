@@ -52,7 +52,7 @@ class ScriptedBrain:
                     )
                 ],
             ),
-            BrainDecision(decision_type="plan", message="reached the pre-grasp pose"),
+            BrainDecision(decision_type="respond", message="reached the pre-grasp pose"),
         ]
         self._i = 0
 

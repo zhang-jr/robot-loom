@@ -53,7 +53,7 @@ class _MockBrain:
         d = (
             self._decisions[self._i]
             if self._i < len(self._decisions)
-            else BrainDecision(decision_type="plan", message="done")
+            else BrainDecision(decision_type="respond", message="done")
         )
         self._i += 1
         return d
@@ -218,7 +218,7 @@ async def test_skill_call_routes_to_execute_and_surfaces_result() -> None:
     brain = _MockBrain(
         [
             _call("skill.dummy", {"robot_id": "r0", "parameters": {"k": "v"}}),
-            BrainDecision(decision_type="plan", message="done"),
+            BrainDecision(decision_type="respond", message="done"),
         ]
     )
     loop = AgentLoop(brain, ctx, max_turns=5)
@@ -351,7 +351,7 @@ async def test_loop_gate_audits_skipped_when_no_checkable_command(tmp_path: Any)
     brain = _MockBrain(
         [
             _call("test.blind_actuator", {"robot_id": "r0"}),
-            BrainDecision(decision_type="plan", message="done"),
+            BrainDecision(decision_type="respond", message="done"),
         ]
     )
     loop = AgentLoop(brain, ctx, max_turns=3)
@@ -462,7 +462,7 @@ async def test_skill_internal_call_stays_on_task_trace_through_loop() -> None:
     brain = _MockBrain(
         [
             _call("skill.tracker", {"robot_id": "r0"}),
-            BrainDecision(decision_type="plan", message="done"),
+            BrainDecision(decision_type="respond", message="done"),
         ]
     )
     loop = AgentLoop(brain, ctx, max_turns=3)
@@ -482,7 +482,7 @@ async def test_skill_hardware_call_within_bounds_succeeds_through_loop() -> None
     brain = _MockBrain(
         [
             _call("skill.goodmover", {"robot_id": "r0"}),
-            BrainDecision(decision_type="plan", message="done"),
+            BrainDecision(decision_type="respond", message="done"),
         ]
     )
     loop = AgentLoop(brain, ctx, max_turns=3)
