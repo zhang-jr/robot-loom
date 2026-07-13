@@ -122,7 +122,7 @@ powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 ### Install
 
 ```bash
-git clone https://github.com/<org>/robot-loom.git
+git clone https://github.com/zhang-jr/robot-loom.git
 cd robot-loom
 
 # Create virtual environment and install all dependencies (including dev extras)

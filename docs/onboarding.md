@@ -54,7 +54,7 @@ powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 ### 克隆与安装
 
 ```bash
-git clone https://github.com/<org>/robot-loom.git
+git clone https://github.com/zhang-jr/robot-loom.git
 cd robot-loom
 
 # 创建虚拟环境 + 安装依赖（含 dev extras）

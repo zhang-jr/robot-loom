@@ -26,6 +26,11 @@ dependencies = [
     "mcp>=1.0.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/zhang-jr/robot-loom"
+Repository = "https://github.com/zhang-jr/robot-loom"
+Issues = "https://github.com/zhang-jr/robot-loom/issues"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.2.0",
