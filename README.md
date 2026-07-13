@@ -34,7 +34,7 @@ In practice, every robot AI team re-builds the same scaffolding: client adapters
 
 | Layer | Responsibility | Rate / Deployment |
 |---|---|---|
-| **Channel** | User ingress: CLI / Web / Telegram / Discord / Feishu | event-driven |
+| **Channel** | User ingress: CLI / Web / Telegram / Voice (Discord / Feishu / DingTalk planned) | event-driven |
 | **Brain** | LLM/VLM planning + tool call decisions | 1–7 Hz, can run cloud |
 | **ToolRegistry** | Tool registration, schema validation, routing, call tracing | sync/async |
 | **SkillRegistry** | Versioned tool-composition registry | mid-freq |
@@ -141,6 +141,26 @@ uv run robot-loom init
 # Creates ~/.robot-loom/workspace/ from the workspace_template/
 ```
 
+### Run a task
+
+Drive a single task through the Brain ⇄ tool-call loop:
+
+```bash
+uv run robot-loom run --task "inspect the shelf and report anything out of place"
+# --robot-id <id>   target a specific robot (defaults to the first in config)
+# --max-turns <n>   cap the agent loop (default 20)
+```
+
+Or run resident, routing channel messages into the loop:
+
+```bash
+uv run robot-loom serve --channel cli            # interactive terminal channel
+uv run robot-loom serve --channel telegram       # reads TELEGRAM_BOT_TOKEN from env
+# --channel is repeatable; combine to serve several at once
+```
+
+Other entry points: `robot-loom tool list`, `robot-loom skill list` / `skill validate <manifest.yaml>`, `robot-loom fleet status`, and `robot-loom mcp serve` (expose the harness itself as an MCP server).
+
 ### Run tests
 
 ```bash
@@ -190,7 +210,7 @@ robot-loom/
 │   ├── safety/              # SafetyEnvelope (mandatory pre-flight)
 │   ├── fleet/               # multi-robot coordination + leasing
 │   ├── runtime/             # AgentLoop + HarnessContext + Scheduler
-│   ├── channels/            # CLI / Web / Telegram / Discord / Feishu / DingTalk
+│   ├── channels/            # CLI / Web / Telegram / Voice (Discord / Feishu / DingTalk planned)
 │   ├── observability/       # OTel tracer + Prometheus metrics
 │   ├── data/                # episode buffer schema (training pipeline not included)
 │   ├── config/              # config loader + schema + paths
