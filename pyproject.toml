@@ -53,6 +53,13 @@ sim-ref = [
     "uvicorn>=0.29.0",
     "pillow>=10.0.0",
 ]
+# The voice *gateway* (device ingestion, VAD/AEC, streaming ASR, session
+# management, TTS playback) is an external sibling-repo server (ADR-037); the
+# harness side is a thin websocket wire client, so this extra carries only the
+# ws library.
+voice = [
+    "websockets>=14.0",
+]
 
 [project.scripts]
 robot-loom = "robot_harness.cli:main"
@@ -170,8 +177,8 @@ module = [
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-# fastapi is an optional extra — only present when installed
-module = ["fastapi", "fastapi.*"]
+# fastapi / websockets are optional extras — only present when installed
+module = ["fastapi", "fastapi.*", "websockets", "websockets.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

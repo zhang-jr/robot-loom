@@ -156,6 +156,9 @@ Or run resident, routing channel messages into the loop:
 ```bash
 uv run robot-loom serve --channel cli            # interactive terminal channel
 uv run robot-loom serve --channel telegram       # reads TELEGRAM_BOT_TOKEN from env
+uv run robot-loom serve --channel voice_gateway  # external voice gateway (finalized-utterance
+                                                 # text over websocket; set channels.voice_gateway.url
+                                                 # in config.yaml and install robot-loom[voice])
 # --channel is repeatable; combine to serve several at once
 ```
 
