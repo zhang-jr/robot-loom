@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from robot_harness.errors import ToolCancelledError
+from robot_harness.errors import HardwareNotReadyError, RobotOfflineError, ToolCancelledError
 from robot_harness.tools.base import ToolContext, ToolRegistry
 from robot_harness.tools.robot_sdk import (
     COMPLETION_VERDICT_SCHEMA,
@@ -401,7 +401,6 @@ async def test_malformed_verdict_from_agent_server_is_typed_offline_error() -> N
     """A response that is not a CompletionVerdict is 'not speaking the
     contract' — a typed RobotOfflineError, never a raw ValidationError
     escaping into the loop (ISS-034)."""
-    from robot_harness.errors import RobotOfflineError
 
     class _GarbageVerbAdapter:
         async def call_verb(self, verb: str, payload: dict[str, object]) -> dict[str, object]:
@@ -413,3 +412,63 @@ async def test_malformed_verdict_from_agent_server_is_typed_offline_error() -> N
     tool = HomeTool({"robot-0": _GarbageVerbAdapter()})
     with pytest.raises(RobotOfflineError, match="malformed CompletionVerdict"):
         await tool.invoke({"robot_id": "robot-0"}, _ctx())
+
+
+# ---------------------------------------------------------------------------
+# Unknown robot_id with a wired fleet is a typed failure, never a mock
+# ---------------------------------------------------------------------------
+
+
+class _CannedVerbAdapter:
+    """Minimal SupportsVerbs adapter — dispatch must never fall through it."""
+
+    async def call_verb(self, verb: str, payload: dict[str, object]) -> dict[str, object]:
+        return {"outcome": "success", "evidence": f"live {verb}", "aborted_by": "none"}
+
+    async def available_verbs(self) -> list[str] | None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_unknown_robot_id_with_wired_fleet_raises_typed_error() -> None:
+    """A robot_id outside the wired fleet must raise a RobotOfflineError naming
+    the fleet (so the Brain can correct it) — never a fabricated mock success
+    verdict for a robot that does not exist."""
+    tool = ReactiveGraspTool({"go2-01": _CannedVerbAdapter()})
+    with pytest.raises(RobotOfflineError, match=r"wired fleet.*go2-01"):
+        await tool.invoke(
+            {"robot_id": "robot-0", "target_hint": {"kind": "phrase", "phrase": "bottle"}},
+            _ctx(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_wired_adapter_without_verb_capability_raises_typed_error() -> None:
+    """A wired adapter that cannot run verbs must fail typed, not simulate."""
+    tool = HomeTool({"robot-0": object()})
+    with pytest.raises(HardwareNotReadyError, match="does not implement on-robot verbs"):
+        await tool.invoke({"robot_id": "robot-0"}, _ctx())
+
+
+@pytest.mark.asyncio
+async def test_no_fleet_wired_still_simulates() -> None:
+    """A tool built with NO adapters at all keeps the simulated-verdict path
+    (standalone / harness plumbing tests) — the wired-fleet guard narrows the
+    fallback, it does not remove it."""
+    tool = HomeTool()
+    result = await tool.invoke({"robot_id": "anything"}, _ctx())
+    assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_execute_action_unknown_robot_id_raises_typed_error() -> None:
+    """Same guard, low-level dispatch flavor: execute_action with a wired fleet
+    must not return a fabricated mock handle for an unknown robot_id."""
+    from robot_harness.tools.robot_sdk.http_adapter import RobotSdkTool
+
+    tool = RobotSdkTool({"go2-01": _CannedVerbAdapter()})  # type: ignore[dict-item]
+    with pytest.raises(RobotOfflineError, match=r"wired fleet.*go2-01"):
+        await tool.invoke(
+            {"robot_id": "robot-0", "command_type": "joint", "values": [0.0] * 6},
+            _ctx(),
+        )

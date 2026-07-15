@@ -240,8 +240,9 @@ class HarnessContext:
         # action closed loop on the robot; execute_action is the low-level dispatch
         # skills use for gripper/joint moves. Registered here so both CLI and
         # programmatic callers get a functional act layer — and so the builtin
-        # skills' ``required_tools`` resolve. Verbs dispatch to a live/sim
-        # agent_server when the adapter supports them, else return a mock verdict.
+        # skills' ``required_tools`` resolve. Verbs dispatch to the addressed
+        # robot's live/sim/mock agent_server; a robot_id outside the wired fleet
+        # is a typed failure, never a simulated success.
         for verb_tool in build_robot_sdk_verb_tools(adapters):
             _register(verb_tool)
         _register(RobotSdkTool(adapters))

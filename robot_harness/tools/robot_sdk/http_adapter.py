@@ -15,6 +15,7 @@ import uuid
 from typing import Any
 
 from robot_harness.embodiment.base import EmbodimentAdapter, EmbodimentCommand
+from robot_harness.errors import RobotOfflineError
 from robot_harness.tools.base import ToolContext, ToolResult
 from robot_harness.tools.schema import ToolBackend, ToolSchema
 
@@ -37,7 +38,8 @@ class RobotSdkTool:
       • Constructed with an ``adapters`` map (robot_id → EmbodimentAdapter) it
         dispatches *for real* — to a real robot or a sim agent_server — then
         samples ``get_state()`` so the loop sees the post-step state. This is
-        the path that actually advances a sim ``env.step()`` (ADR-021).
+        the path that actually advances a sim ``env.step()`` (ADR-021). A
+        robot_id not in the map raises instead of mocking.
       • Constructed without it, it returns a mock handle (offline / unit tests).
     """
 
@@ -90,8 +92,9 @@ class RobotSdkTool:
     def __init__(self, adapters: dict[str, EmbodimentAdapter] | None = None) -> None:
         """Args:
         adapters: robot_id → EmbodimentAdapter. When provided, ``invoke``
-            dispatches to the real/sim backend and samples state. When omitted,
-            ``invoke`` returns a mock handle (offline / tests).
+            dispatches to the real/sim backend and samples state; an unknown
+            robot_id raises instead of mocking. When omitted, ``invoke``
+            returns a mock handle (offline / tests).
         """
         self._adapters = adapters or {}
 
@@ -121,10 +124,9 @@ class RobotSdkTool:
     async def invoke(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         t0 = time.monotonic()
         robot_id = args.get("robot_id", ctx.robot_id)
-        adapter = self._adapters.get(robot_id)
 
-        if adapter is None:
-            # No live backend wired — mock dispatch (offline / unit tests).
+        if not self._adapters:
+            # No fleet wired at all — mock dispatch (offline / unit tests).
             latency = (time.monotonic() - t0) * 1000
             return ToolResult(
                 tool_name=self.name,
@@ -136,6 +138,18 @@ class RobotSdkTool:
                     "robot_id": robot_id,
                 },
                 latency_ms=latency,
+            )
+
+        adapter = self._adapters.get(robot_id)
+        if adapter is None:
+            # A fleet IS wired: an unknown robot_id must be a typed failure the
+            # Brain can correct — never a fabricated success handle.
+            raise RobotOfflineError(
+                f"unknown robot_id '{robot_id}' for execute_action — "
+                f"wired fleet: {sorted(self._adapters)}",
+                robot_id=robot_id,
+                tool_name=self.name,
+                module_name="tools.robot_sdk.http_adapter",
             )
 
         # Live dispatch: send the high-level command, then sample the resulting

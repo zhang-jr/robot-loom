@@ -23,11 +23,13 @@ The harness side stays thin: build a verb tool, register it with the
 the same :data:`COMPLETION_VERDICT_SCHEMA` output shape so downstream
 ReplanPolicy can treat them uniformly.
 
-Status: when constructed with an ``adapters`` map whose adapter implements
-:class:`SupportsVerbs` (real or sim agent_server), :meth:`_RobotSdkVerbTool._dispatch`
-POSTs the verb to the agent_server's ``/verb/{name}`` endpoint and the on-robot
-mid-loop runs there. Without a verb-capable adapter the tool returns a simulated
-verdict (harness end-to-end tests). Which verbs an agent_server actually implements
+Status: when constructed with an ``adapters`` map (real, sim, or mock-client
+agent_server — all implement :class:`SupportsVerbs`),
+:meth:`_RobotSdkVerbTool._dispatch` POSTs the verb to the addressed robot's
+``/verb/{name}`` endpoint and the on-robot mid-loop runs there. A robot_id not
+in the wired fleet raises a typed ``RobotOfflineError`` — never a simulated
+success; only a tool built with no adapters at all falls back to a
+simulated verdict (harness plumbing tests). Which verbs an agent_server actually implements
 is discovered live via ``/health.available_verbs`` (``SupportsVerbs.available_verbs``);
 at planning time the harness excludes unadvertised verb tools from the Brain's
 vocabulary (:func:`unavailable_verb_tool_names` → ``export_for_brain(exclude_names=…)``,
@@ -52,7 +54,7 @@ from typing import Any, ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from robot_harness.embodiment.base import EmbodimentCommand, SupportsVerbs
-from robot_harness.errors import RobotOfflineError, ToolCancelledError
+from robot_harness.errors import HardwareNotReadyError, RobotOfflineError, ToolCancelledError
 from robot_harness.tools.base import ToolContext, ToolResult
 from robot_harness.tools.schema import ToolBackend, ToolSchema
 
@@ -205,9 +207,9 @@ class _RobotSdkVerbTool:
     """Common skeleton for on-robot verb tools.
 
     Concrete subclasses set ``name``, ``schema``, and override ``_simulate()``
-    to produce a verb-specific mock :class:`CompletionVerdict`. The future
-    real transport (HTTP/WS POST to the per-robot ``agent_server``) will be
-    wired into :meth:`_dispatch` -- mock mode short-circuits to ``_simulate``.
+    to produce a verb-specific mock :class:`CompletionVerdict` for the
+    no-fleet-wired case; with a fleet wired, :meth:`_dispatch` POSTs the verb
+    to the addressed robot's ``agent_server`` and never simulates.
     """
 
     name: ClassVar[str] = ""
@@ -220,10 +222,11 @@ class _RobotSdkVerbTool:
 
     def __init__(self, adapters: dict[str, Any] | None = None) -> None:
         """Args:
-        adapters: robot_id → EmbodimentAdapter. When the resolved adapter
-            supports verbs (``SupportsVerbs``, e.g. a sim agent_server), the
-            verb is POSTed to its ``/verb/{name}`` endpoint and the on-robot
-            mid-loop runs there. Otherwise the tool returns a simulated verdict.
+        adapters: robot_id → EmbodimentAdapter. With adapters wired, the verb
+            is POSTed to the addressed robot's ``/verb/{name}`` endpoint and
+            the on-robot mid-loop runs there; a robot_id not in the map raises
+            instead of simulating. Only a tool built with no adapters at all
+            returns simulated verdicts (plumbing tests).
         """
         self._adapters = adapters or {}
 
@@ -295,29 +298,50 @@ class _RobotSdkVerbTool:
     # ----- override hooks ---------------------------------------------------
 
     async def _dispatch(self, args: dict[str, Any], ctx: ToolContext) -> CompletionVerdict:
-        """Dispatch to the agent_server's verb endpoint, or simulate if unwired.
+        """Dispatch to the addressed robot's agent_server verb endpoint.
 
         The verb name is the tool name without the ``robot_sdk.`` prefix.
+
+        With a fleet wired, a robot_id outside it is a typed failure the Brain
+        can correct — never a fabricated ``success`` verdict for a robot that
+        does not exist. ``_simulate`` is reachable only when the tool was
+        built with no fleet at all (standalone / harness plumbing tests).
         """
         robot_id = args.get("robot_id", ctx.robot_id)
+        verb = self.name.split(".", 1)[1]
+        if not self._adapters:
+            return await self._simulate(args, ctx)
         adapter = self._adapters.get(robot_id)
-        if isinstance(adapter, SupportsVerbs):
-            verb = self.name.split(".", 1)[1]
-            resp = await adapter.call_verb(verb, args)
-            try:
-                return CompletionVerdict.model_validate(resp)
-            except ValidationError as exc:
-                # A response that is not a CompletionVerdict is "not speaking
-                # the contract" — the same typed failure as unreachable (the
-                # wire clients set the precedent), never a raw ValidationError
-                # escaping into the loop (ISS-034).
-                raise RobotOfflineError(
-                    f"agent_server returned a malformed CompletionVerdict for verb '{verb}': {exc}",
-                    robot_id=robot_id,
-                    tool_name=self.name,
-                    module_name="tools.robot_sdk.verbs",
-                ) from exc
-        return await self._simulate(args, ctx)
+        if adapter is None:
+            raise RobotOfflineError(
+                f"unknown robot_id '{robot_id}' for verb '{verb}' — "
+                f"wired fleet: {sorted(self._adapters)}",
+                robot_id=robot_id,
+                tool_name=self.name,
+                module_name="tools.robot_sdk.verbs",
+            )
+        if not isinstance(adapter, SupportsVerbs):
+            raise HardwareNotReadyError(
+                f"adapter for robot '{robot_id}' does not implement on-robot verbs "
+                f"(SupportsVerbs) — cannot run '{verb}'",
+                robot_id=robot_id,
+                tool_name=self.name,
+                module_name="tools.robot_sdk.verbs",
+            )
+        resp = await adapter.call_verb(verb, args)
+        try:
+            return CompletionVerdict.model_validate(resp)
+        except ValidationError as exc:
+            # A response that is not a CompletionVerdict is "not speaking
+            # the contract" — the same typed failure as unreachable (the
+            # wire clients set the precedent), never a raw ValidationError
+            # escaping into the loop (ISS-034).
+            raise RobotOfflineError(
+                f"agent_server returned a malformed CompletionVerdict for verb '{verb}': {exc}",
+                robot_id=robot_id,
+                tool_name=self.name,
+                module_name="tools.robot_sdk.verbs",
+            ) from exc
 
     async def _simulate(self, args: dict[str, Any], ctx: ToolContext) -> CompletionVerdict:
         """Subclasses produce a verb-specific mock verdict."""
