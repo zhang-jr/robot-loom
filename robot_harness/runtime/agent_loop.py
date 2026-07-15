@@ -390,6 +390,11 @@ class AgentLoop:
         Brain needs for grounding (site semantics, standing orders) that the
         harness cannot discover and that is not runtime state (which is Memory's).
 
+        The task's robot assignment is stated in the opening user turn: the Brain
+        fills ``robot_id`` args from what it reads, and without this line its only
+        source is ROBOT.md prose — a stale workspace file then misaddresses every
+        call.
+
         Any cognitive scaffold (a plan/reflection set before the loop) is injected
         into the opening user turn. During the task, plan/reflection updates are
         visible via their tool results already in the conversation; re-injection is
@@ -400,6 +405,8 @@ class AgentLoop:
         if overlay:
             system = f"{_SYSTEM_PROMPT}\n\n{overlay}"
         sections = [f"Task: {task.description}"]
+        if task.robot_id:
+            sections.append(f"Assigned robot: {task.robot_id}")
         if task.constraints:
             sections.append(f"Constraints: {'; '.join(task.constraints)}")
         scaffold = self._ctx.format_scaffold_for_injection(task.robot_id)
