@@ -144,7 +144,7 @@ class Tracer:
 
     def _emit(self, record: dict[str, Any]) -> None:
         record["ts"] = datetime.now(tz=UTC).isoformat()
-        print(json.dumps(record, default=str), file=self._sink, flush=True)
+        print(json.dumps(record, default=str, ensure_ascii=False), file=self._sink, flush=True)
 
     def event(self, name: str, **attrs: Any) -> None:
         """Emit a point-in-time event (no duration).

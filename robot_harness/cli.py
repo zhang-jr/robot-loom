@@ -200,7 +200,7 @@ async def _async_run(args: argparse.Namespace) -> None:
     )
 
     result = await loop.run(task)
-    print(json.dumps(result.model_dump(), indent=2, default=str))  # noqa: T201
+    print(json.dumps(result.model_dump(), indent=2, default=str, ensure_ascii=False))  # noqa: T201
     sys.exit(0 if result.outcome == "success" else 1)
 
 

@@ -459,7 +459,10 @@ class AgentLoop:
                     {
                         "id": tc.call_id,
                         "type": "function",
-                        "function": {"name": tc.tool_name, "arguments": json.dumps(tc.args)},
+                        "function": {
+                            "name": tc.tool_name,
+                            "arguments": json.dumps(tc.args, ensure_ascii=False),
+                        },
                     }
                     for tc in decision.tool_calls
                 ],
@@ -477,7 +480,7 @@ class AgentLoop:
         output = result.get("output") or {}
         facts = {k: v for k, v in output.items() if k not in self._OBSERVATION_BLOB_KEYS}
         if result.get("success"):
-            content = json.dumps(facts, default=str)
+            content = json.dumps(facts, default=str, ensure_ascii=False)
         else:
             payload: dict[str, Any] = {
                 "error": result.get("error"),
@@ -485,7 +488,7 @@ class AgentLoop:
             }
             if facts:
                 payload["output"] = facts
-            content = json.dumps(payload, default=str)
+            content = json.dumps(payload, default=str, ensure_ascii=False)
         return {"role": "tool", "tool_call_id": call_id, "content": content}
 
     @staticmethod
