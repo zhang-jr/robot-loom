@@ -19,6 +19,7 @@ from robot_harness.tools.robot_sdk import (
     COMPLETION_VERDICT_SCHEMA,
     ROBOT_SDK_HOME,
     ROBOT_SDK_LOCOMOTE_TO,
+    ROBOT_SDK_MOVE_JOINTS,
     ROBOT_SDK_MOVE_TO_POSE,
     ROBOT_SDK_REACTIVE_GRASP,
     ROBOT_SDK_VISUAL_SERVO_TO,
@@ -26,6 +27,7 @@ from robot_harness.tools.robot_sdk import (
     CompletionVerdict,
     HomeTool,
     LocomoteToTool,
+    MoveJointsTool,
     MoveToPoseTool,
     ReactiveGraspTool,
     VisualServoToTool,
@@ -51,6 +53,7 @@ def test_factory_returns_all_verbs() -> None:
         ROBOT_SDK_REACTIVE_GRASP,
         ROBOT_SDK_VISUAL_SERVO_TO,
         ROBOT_SDK_MOVE_TO_POSE,
+        ROBOT_SDK_MOVE_JOINTS,
         ROBOT_SDK_LOCOMOTE_TO,
         ROBOT_SDK_HOME,
     }
@@ -87,6 +90,7 @@ def test_unavailable_verbs_excludes_unadvertised_only() -> None:
         ROBOT_SDK_REACTIVE_GRASP,
         ROBOT_SDK_VISUAL_SERVO_TO,
         ROBOT_SDK_MOVE_TO_POSE,
+        ROBOT_SDK_MOVE_JOINTS,
     }
 
 
@@ -128,6 +132,21 @@ def test_move_to_pose_input_carries_frame_enum() -> None:
     schema = MoveToPoseTool.schema.input_schema
     assert set(schema["required"]) == {"robot_id", "target_pose"}
     assert schema["properties"]["frame"]["enum"] == ["base", "world", "tool"]
+    # placement waypoints carry a per-step gripper value on the same motion call
+    assert "gripper" in schema["properties"]
+
+
+def test_move_joints_input_requires_target_joints() -> None:
+    """Joint-space direct drive: the caller supplies the joint configuration;
+    gripper rides along optionally, exactly like move_to_pose."""
+    schema = MoveJointsTool.schema.input_schema
+    assert set(schema["required"]) == {"robot_id", "target_joints"}
+    assert schema["properties"]["target_joints"]["items"] == {"type": "number"}
+    assert "gripper" in schema["properties"]
+    out = MoveJointsTool.schema.output_schema
+    assert out is not None
+    assert "final_joints" in out["properties"]
+    assert "residual_error_rad" in out["properties"]
 
 
 def test_home_input_minimal() -> None:
@@ -142,7 +161,14 @@ def test_home_input_minimal() -> None:
 
 @pytest.mark.parametrize(
     "tool_cls",
-    [ReactiveGraspTool, VisualServoToTool, MoveToPoseTool, LocomoteToTool, HomeTool],
+    [
+        ReactiveGraspTool,
+        VisualServoToTool,
+        MoveToPoseTool,
+        MoveJointsTool,
+        LocomoteToTool,
+        HomeTool,
+    ],
 )
 def test_every_verb_publishes_completion_verdict_fields(tool_cls: type) -> None:
     out = tool_cls.schema.output_schema
@@ -214,6 +240,19 @@ async def test_move_to_pose_mock_dispatches_with_default_frame() -> None:
     )
     assert result.success is True
     assert (result.output or {})["outcome"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_move_joints_mock_returns_final_joints() -> None:
+    tool = MoveJointsTool()
+    target = [0.0, 0.5, -0.5, 0.0, 1.0, 0.0]
+    result = await tool.invoke(
+        {"robot_id": "robot-0", "target_joints": target},
+        _ctx(),
+    )
+    assert result.success is True
+    snap = (result.output or {}).get("robot_state_snapshot", {})
+    assert snap.get("final_joints") == target
 
 
 @pytest.mark.asyncio
@@ -312,6 +351,7 @@ def test_home_is_idempotent_others_are_not() -> None:
     assert ReactiveGraspTool().is_idempotent is False
     assert VisualServoToTool().is_idempotent is False
     assert MoveToPoseTool().is_idempotent is False
+    assert MoveJointsTool().is_idempotent is False
 
 
 def test_all_verbs_are_cancellable() -> None:

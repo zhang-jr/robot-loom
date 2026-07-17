@@ -20,6 +20,7 @@ from robot_harness.tools.base import ToolContext, ToolRegistry
 from robot_harness.tools.generic.shell import ShellTool
 from robot_harness.tools.robot_sdk.http_adapter import RobotSdkTool
 from robot_harness.tools.robot_sdk.verbs import (
+    ROBOT_SDK_MOVE_JOINTS,
     ROBOT_SDK_MOVE_TO_POSE,
     ROBOT_SDK_REACTIVE_GRASP,
     VERB_TOOL_NAMES,
@@ -60,6 +61,34 @@ def test_move_to_pose_maps_to_cartesian_safety_command() -> None:
     assert cmd is not None
     assert cmd.command_type == "cartesian"
     assert cmd.values[:3] == [0.4, 0.0, 0.3]
+
+
+def test_move_joints_maps_to_joint_safety_command() -> None:
+    reg = _registry()
+    ctx = ToolContext.create(robot_id="robot-0")
+    cmd = reg.build_safety_command(
+        ROBOT_SDK_MOVE_JOINTS,
+        {"robot_id": "robot-0", "target_joints": [0.0, 0.5, -0.5, 0.0, 1.0, 0.0]},
+        ctx,
+    )
+    assert cmd is not None
+    assert cmd.command_type == "joint"
+    assert cmd.values == [0.0, 0.5, -0.5, 0.0, 1.0, 0.0]
+
+
+@pytest.mark.asyncio
+async def test_move_joints_beyond_configured_limits_is_rejected() -> None:
+    reg = _registry()
+    env = SafetyEnvelope(SafetyConfig(joint_limits_rad=[3.14] * 6))
+    ctx = ToolContext.create(robot_id="robot-0")
+    cmd = reg.build_safety_command(
+        ROBOT_SDK_MOVE_JOINTS,
+        {"robot_id": "robot-0", "target_joints": [0.0, 9.0, 0.0, 0.0, 0.0, 0.0]},
+        ctx,
+    )
+    assert cmd is not None
+    with pytest.raises(SafetyEnvelopeViolation):
+        await env.check(cmd, trace_id="t", subtask_id="s")
 
 
 @pytest.mark.asyncio

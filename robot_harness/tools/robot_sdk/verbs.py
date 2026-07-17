@@ -15,11 +15,13 @@ Minimal subset:
     | visual_servo_to   | "drive end-effector to this pose      | No         |
     |                   | using visual feedback"                |            |
     | move_to_pose      | "go to this pose, no vision needed"   | No         |
+    | move_joints       | "drive the joints to this exact       | No         |
+    |                   | configuration, joint-space direct"    |            |
     | locomote_to       | "drive the base to this goal pose"    | No         |
     | home              | "return to home configuration"        | Yes        |
 
 The harness side stays thin: build a verb tool, register it with the
-:class:`ToolRegistry`, and let Brain pick it up by name. All five tools share
+:class:`ToolRegistry`, and let Brain pick it up by name. All six tools share
 the same :data:`COMPLETION_VERDICT_SCHEMA` output shape so downstream
 ReplanPolicy can treat them uniformly.
 
@@ -65,6 +67,7 @@ from robot_harness.tools.schema import ToolBackend, ToolSchema
 ROBOT_SDK_REACTIVE_GRASP = "robot_sdk.reactive_grasp"
 ROBOT_SDK_VISUAL_SERVO_TO = "robot_sdk.visual_servo_to"
 ROBOT_SDK_MOVE_TO_POSE = "robot_sdk.move_to_pose"
+ROBOT_SDK_MOVE_JOINTS = "robot_sdk.move_joints"
 ROBOT_SDK_LOCOMOTE_TO = "robot_sdk.locomote_to"
 ROBOT_SDK_HOME = "robot_sdk.home"
 
@@ -72,6 +75,7 @@ VERB_TOOL_NAMES: tuple[str, ...] = (
     ROBOT_SDK_REACTIVE_GRASP,
     ROBOT_SDK_VISUAL_SERVO_TO,
     ROBOT_SDK_MOVE_TO_POSE,
+    ROBOT_SDK_MOVE_JOINTS,
     ROBOT_SDK_LOCOMOTE_TO,
     ROBOT_SDK_HOME,
 )
@@ -136,6 +140,26 @@ _POSE6_SCHEMA: dict[str, Any] = {
     "minItems": 6,
     "maxItems": 6,
     "description": "[x, y, z, rx, ry, rz] — meters and radians, robot base frame.",
+}
+
+_JOINTS_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "items": {"type": "number"},
+    "minItems": 1,
+    "description": (
+        "Target joint positions in radians, one per joint in the robot's joint "
+        "order; length must match the arm's DOF."
+    ),
+}
+
+_GRIPPER_SCHEMA: dict[str, Any] = {
+    "type": "number",
+    "description": (
+        "Gripper command to hold during the motion. Value semantics are "
+        "backend-specific — consult the robot's workspace docs for its "
+        "open/close values. Omit to keep the backend default; pose/joint "
+        "motions never actuate the gripper on their own."
+    ),
 }
 
 _CONSTRAINTS_SCHEMA: dict[str, Any] = {
@@ -523,9 +547,10 @@ class MoveToPoseTool(_RobotSdkVerbTool):
     trajectory planning, joint servo, and collision avoidance — this verb does
     NOT degrade to harness-side trajectory control.
 
-    Contrast with :class:`VisualServoToTool` (closes a visual loop) and
-    :class:`RobotSdkTool` (low-level ``execute_action`` for already-resolved
-    targets the harness wants to send as-is).
+    Contrast with :class:`VisualServoToTool` (closes a visual loop),
+    :class:`MoveJointsTool` (joint-space direct drive for already-known joint
+    configurations), and :class:`RobotSdkTool` (low-level ``execute_action``
+    for already-resolved targets the harness wants to send as-is).
     """
 
     name = ROBOT_SDK_MOVE_TO_POSE
@@ -534,7 +559,9 @@ class MoveToPoseTool(_RobotSdkVerbTool):
         description=(
             "Plan and execute motion to a target end-effector pose.  On-robot "
             "runtime owns trajectory planning and joint servo; no visual "
-            "feedback loop (use visual_servo_to for that)."
+            "feedback loop (use visual_servo_to for that). If the target is "
+            "a known joint configuration rather than a pose, prefer "
+            "move_joints — joint-space drive tracks more reliably."
         ),
         input_schema={
             "type": "object",
@@ -547,6 +574,7 @@ class MoveToPoseTool(_RobotSdkVerbTool):
                     "default": "base",
                     "description": "Reference frame for target_pose.",
                 },
+                "gripper": _GRIPPER_SCHEMA,
                 "constraints": _CONSTRAINTS_SCHEMA,
             },
             "required": ["robot_id", "target_pose"],
@@ -586,7 +614,88 @@ class MoveToPoseTool(_RobotSdkVerbTool):
 
 
 # ---------------------------------------------------------------------------
-# 4. home --------------------------------------------------------------------
+# 4. move_joints -------------------------------------------------------------
+# ---------------------------------------------------------------------------
+
+
+class MoveJointsTool(_RobotSdkVerbTool):
+    """Drive the joints directly to a target configuration, joint-space direct.
+
+    Real-hardware feedback: joint-space direct drive tracks more reliably than
+    Cartesian end-pose tracking, so prefer this verb whenever the target joint
+    configuration is already *known* — taught waypoints and named
+    configurations recorded in the robot's workspace docs. Targets computed at
+    runtime (perception, grasp poses, memory) only exist as Cartesian poses
+    and must go through :class:`MoveToPoseTool` instead: the harness does no
+    IK, and the on-robot runtime only accepts joint targets as-is here.
+
+    The full joint target is harness-checkable, so ``to_safety_command``
+    exposes it as a ``joint`` command — SafetyEnvelope validates every joint
+    against ``safety.joint_limits_rad`` pre-dispatch (honest skip when no
+    limits are configured).
+    """
+
+    name = ROBOT_SDK_MOVE_JOINTS
+    schema = ToolSchema(
+        name=ROBOT_SDK_MOVE_JOINTS,
+        description=(
+            "Drive the arm joints directly to a target joint configuration "
+            "(radians); the on-robot runtime interpolates in joint space. "
+            "More reliable than Cartesian end-pose tracking — prefer it over "
+            "move_to_pose whenever the target joint configuration is already "
+            "known (e.g. a taught waypoint). Targets computed at runtime as "
+            "Cartesian poses must use move_to_pose instead; the harness does "
+            "no IK."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "robot_id": {"type": "string"},
+                "target_joints": _JOINTS_SCHEMA,
+                "gripper": _GRIPPER_SCHEMA,
+                "constraints": _CONSTRAINTS_SCHEMA,
+            },
+            "required": ["robot_id", "target_joints"],
+        },
+        output_schema={
+            "type": "object",
+            "properties": {
+                **COMPLETION_VERDICT_SCHEMA["properties"],
+                "final_joints": _JOINTS_SCHEMA,
+                "residual_error_rad": {
+                    "type": "number",
+                    "description": "Worst-joint residual to the target, radians.",
+                },
+            },
+            "required": COMPLETION_VERDICT_SCHEMA["required"],
+        },
+    )
+
+    def to_safety_command(self, args: dict[str, Any], ctx: ToolContext) -> EmbodimentCommand | None:
+        joints = args.get("target_joints")
+        if not joints:
+            return None
+        return EmbodimentCommand(
+            robot_id=args.get("robot_id", ctx.robot_id),
+            command_type="joint",
+            values=list(joints),
+        )
+
+    async def _simulate(self, args: dict[str, Any], ctx: ToolContext) -> CompletionVerdict:
+        target = args.get("target_joints", [0.0] * 6)
+        return CompletionVerdict(
+            outcome="success",
+            evidence=f"mock move_joints reached target={target}",
+            duration_s=1.0,
+            robot_state_snapshot={
+                "robot_id": args.get("robot_id", ctx.robot_id),
+                "final_joints": target,
+            },
+        )
+
+
+# ---------------------------------------------------------------------------
+# 5. home --------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 
 
@@ -634,7 +743,7 @@ class HomeTool(_RobotSdkVerbTool):
 
 
 # ---------------------------------------------------------------------------
-# 5. locomote_to -------------------------------------------------------------
+# 6. locomote_to -------------------------------------------------------------
 # ---------------------------------------------------------------------------
 
 
@@ -756,6 +865,7 @@ def build_robot_sdk_verb_tools(
         ReactiveGraspTool(adapters),
         VisualServoToTool(adapters),
         MoveToPoseTool(adapters),
+        MoveJointsTool(adapters),
         LocomoteToTool(adapters),
         HomeTool(adapters),
     ]
@@ -765,6 +875,7 @@ __all__ = [
     "COMPLETION_VERDICT_SCHEMA",
     "ROBOT_SDK_HOME",
     "ROBOT_SDK_LOCOMOTE_TO",
+    "ROBOT_SDK_MOVE_JOINTS",
     "ROBOT_SDK_MOVE_TO_POSE",
     "ROBOT_SDK_REACTIVE_GRASP",
     "ROBOT_SDK_VISUAL_SERVO_TO",
@@ -773,6 +884,7 @@ __all__ = [
     "CompletionVerdict",
     "HomeTool",
     "LocomoteToTool",
+    "MoveJointsTool",
     "MoveToPoseTool",
     "ReactiveGraspTool",
     "VisualServoToTool",

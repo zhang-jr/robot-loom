@@ -27,6 +27,7 @@ from robot_harness.skill.builtin.place import PlaceSkill
 from robot_harness.skill.registry import SkillRegistry
 from robot_harness.tools.base import BrainProfile, ToolRegistry
 from robot_harness.tools.robot_sdk import (
+    ROBOT_SDK_MOVE_JOINTS,
     ROBOT_SDK_MOVE_TO_POSE,
     ROBOT_SDK_REACTIVE_GRASP,
     ROBOT_SDK_VISUAL_SERVO_TO,
@@ -75,6 +76,7 @@ async def test_single_robot_gates_unadvertised_verbs() -> None:
         ROBOT_SDK_REACTIVE_GRASP,
         ROBOT_SDK_VISUAL_SERVO_TO,
         ROBOT_SDK_MOVE_TO_POSE,
+        ROBOT_SDK_MOVE_JOINTS,
     }
 
 
@@ -85,7 +87,9 @@ async def test_fleet_union_keeps_verbs_any_robot_advertises() -> None:
     ctx = _ctx(
         {
             "go2": _StubVerbAdapter(["locomote_to", "home"]),
-            "arm1": _StubVerbAdapter(["reactive_grasp", "move_to_pose", "visual_servo_to"]),
+            "arm1": _StubVerbAdapter(
+                ["reactive_grasp", "move_to_pose", "move_joints", "visual_servo_to"]
+            ),
         }
     )
     assert await ctx.unavailable_tool_names() == frozenset()
