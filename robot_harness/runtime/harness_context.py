@@ -189,6 +189,7 @@ class HarnessContext:
         from robot_harness.config.loader import load_config
         from robot_harness.embodiment.factory import build_catalog
         from robot_harness.skill.base import Skill
+        from robot_harness.skill.builtin.follow_joint_waypoints import FollowJointWaypointsSkill
         from robot_harness.skill.builtin.navigate_to import NavigateToSkill
         from robot_harness.skill.builtin.pick import PickSkill
         from robot_harness.skill.builtin.place import PlaceSkill
@@ -251,7 +252,12 @@ class HarnessContext:
         # ``skill.<name>`` callable via SkillRegistry.export_for_brain; the
         # AgentLoop routes the call to Skill.execute (skill_tools gates the
         # skill's internal hardware calls through SafetyEnvelope).
-        builtin_skills: tuple[Skill, ...] = (PickSkill(), PlaceSkill(), NavigateToSkill())
+        builtin_skills: tuple[Skill, ...] = (
+            PickSkill(),
+            PlaceSkill(),
+            NavigateToSkill(),
+            FollowJointWaypointsSkill(),
+        )
         for skill in builtin_skills:
             skill_registry.register(skill)
 
