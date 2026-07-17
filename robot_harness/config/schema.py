@@ -110,6 +110,29 @@ class ToolServersConfig(BaseModel):
     perception: str = ""
 
 
+class VoiceGatewayConfig(BaseModel):
+    """Wire endpoint of the external voice gateway (ADR-037).
+
+    The gateway is a sibling-repo external server owning the full audio path
+    (device ingestion, VAD/AEC, streaming ASR, input session management, TTS
+    playback). The harness dials ``url`` and exchanges finalized-utterance
+    text frames — no audio enters this process. Empty ``url`` (the default)
+    means no voice gateway is configured; ``serve --channel voice_gateway``
+    then refuses to start. The auth token is a secret and stays in the
+    environment (``token_env``), never in config (ADR-026 split).
+    """
+
+    url: str = ""
+    token_env: str = "VOICE_GATEWAY_TOKEN"
+    reconnect_backoff_s: float = 3.0
+
+
+class ChannelsConfig(BaseModel):
+    """Per-channel transport configuration (non-secret; secrets stay in env)."""
+
+    voice_gateway: VoiceGatewayConfig = Field(default_factory=VoiceGatewayConfig)
+
+
 class ObservabilityConfig(BaseModel):
     trace_sink: Literal["stderr", "file"] = "stderr"
     trace_file: str = ""
@@ -163,6 +186,7 @@ class HarnessConfig(BaseModel):
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     tool_servers: ToolServersConfig = Field(default_factory=ToolServersConfig)
+    channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     fleet_size: int = 1
     robot_ids: list[str] = Field(default_factory=lambda: ["robot-0"])

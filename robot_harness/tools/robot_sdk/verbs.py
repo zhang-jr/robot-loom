@@ -15,19 +15,23 @@ Minimal subset:
     | visual_servo_to   | "drive end-effector to this pose      | No         |
     |                   | using visual feedback"                |            |
     | move_to_pose      | "go to this pose, no vision needed"   | No         |
+    | move_joints       | "drive the joints to this exact       | No         |
+    |                   | configuration, joint-space direct"    |            |
     | locomote_to       | "drive the base to this goal pose"    | No         |
     | home              | "return to home configuration"        | Yes        |
 
 The harness side stays thin: build a verb tool, register it with the
-:class:`ToolRegistry`, and let Brain pick it up by name. All five tools share
+:class:`ToolRegistry`, and let Brain pick it up by name. All six tools share
 the same :data:`COMPLETION_VERDICT_SCHEMA` output shape so downstream
 ReplanPolicy can treat them uniformly.
 
-Status: when constructed with an ``adapters`` map whose adapter implements
-:class:`SupportsVerbs` (real or sim agent_server), :meth:`_RobotSdkVerbTool._dispatch`
-POSTs the verb to the agent_server's ``/verb/{name}`` endpoint and the on-robot
-mid-loop runs there. Without a verb-capable adapter the tool returns a simulated
-verdict (harness end-to-end tests). Which verbs an agent_server actually implements
+Status: when constructed with an ``adapters`` map (real, sim, or mock-client
+agent_server — all implement :class:`SupportsVerbs`),
+:meth:`_RobotSdkVerbTool._dispatch` POSTs the verb to the addressed robot's
+``/verb/{name}`` endpoint and the on-robot mid-loop runs there. A robot_id not
+in the wired fleet raises a typed ``RobotOfflineError`` — never a simulated
+success; only a tool built with no adapters at all falls back to a
+simulated verdict (harness plumbing tests). Which verbs an agent_server actually implements
 is discovered live via ``/health.available_verbs`` (``SupportsVerbs.available_verbs``);
 at planning time the harness excludes unadvertised verb tools from the Brain's
 vocabulary (:func:`unavailable_verb_tool_names` → ``export_for_brain(exclude_names=…)``,
@@ -52,7 +56,7 @@ from typing import Any, ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from robot_harness.embodiment.base import EmbodimentCommand, SupportsVerbs
-from robot_harness.errors import RobotOfflineError, ToolCancelledError
+from robot_harness.errors import HardwareNotReadyError, RobotOfflineError, ToolCancelledError
 from robot_harness.tools.base import ToolContext, ToolResult
 from robot_harness.tools.schema import ToolBackend, ToolSchema
 
@@ -63,6 +67,7 @@ from robot_harness.tools.schema import ToolBackend, ToolSchema
 ROBOT_SDK_REACTIVE_GRASP = "robot_sdk.reactive_grasp"
 ROBOT_SDK_VISUAL_SERVO_TO = "robot_sdk.visual_servo_to"
 ROBOT_SDK_MOVE_TO_POSE = "robot_sdk.move_to_pose"
+ROBOT_SDK_MOVE_JOINTS = "robot_sdk.move_joints"
 ROBOT_SDK_LOCOMOTE_TO = "robot_sdk.locomote_to"
 ROBOT_SDK_HOME = "robot_sdk.home"
 
@@ -70,6 +75,7 @@ VERB_TOOL_NAMES: tuple[str, ...] = (
     ROBOT_SDK_REACTIVE_GRASP,
     ROBOT_SDK_VISUAL_SERVO_TO,
     ROBOT_SDK_MOVE_TO_POSE,
+    ROBOT_SDK_MOVE_JOINTS,
     ROBOT_SDK_LOCOMOTE_TO,
     ROBOT_SDK_HOME,
 )
@@ -134,6 +140,26 @@ _POSE6_SCHEMA: dict[str, Any] = {
     "minItems": 6,
     "maxItems": 6,
     "description": "[x, y, z, rx, ry, rz] — meters and radians, robot base frame.",
+}
+
+_JOINTS_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "items": {"type": "number"},
+    "minItems": 1,
+    "description": (
+        "Target joint positions in radians, one per joint in the robot's joint "
+        "order; length must match the arm's DOF."
+    ),
+}
+
+_GRIPPER_SCHEMA: dict[str, Any] = {
+    "type": "number",
+    "description": (
+        "Gripper command to hold during the motion. Value semantics are "
+        "backend-specific — consult the robot's workspace docs for its "
+        "open/close values. Omit to keep the backend default; pose/joint "
+        "motions never actuate the gripper on their own."
+    ),
 }
 
 _CONSTRAINTS_SCHEMA: dict[str, Any] = {
@@ -205,9 +231,9 @@ class _RobotSdkVerbTool:
     """Common skeleton for on-robot verb tools.
 
     Concrete subclasses set ``name``, ``schema``, and override ``_simulate()``
-    to produce a verb-specific mock :class:`CompletionVerdict`. The future
-    real transport (HTTP/WS POST to the per-robot ``agent_server``) will be
-    wired into :meth:`_dispatch` -- mock mode short-circuits to ``_simulate``.
+    to produce a verb-specific mock :class:`CompletionVerdict` for the
+    no-fleet-wired case; with a fleet wired, :meth:`_dispatch` POSTs the verb
+    to the addressed robot's ``agent_server`` and never simulates.
     """
 
     name: ClassVar[str] = ""
@@ -220,10 +246,11 @@ class _RobotSdkVerbTool:
 
     def __init__(self, adapters: dict[str, Any] | None = None) -> None:
         """Args:
-        adapters: robot_id → EmbodimentAdapter. When the resolved adapter
-            supports verbs (``SupportsVerbs``, e.g. a sim agent_server), the
-            verb is POSTed to its ``/verb/{name}`` endpoint and the on-robot
-            mid-loop runs there. Otherwise the tool returns a simulated verdict.
+        adapters: robot_id → EmbodimentAdapter. With adapters wired, the verb
+            is POSTed to the addressed robot's ``/verb/{name}`` endpoint and
+            the on-robot mid-loop runs there; a robot_id not in the map raises
+            instead of simulating. Only a tool built with no adapters at all
+            returns simulated verdicts (plumbing tests).
         """
         self._adapters = adapters or {}
 
@@ -295,29 +322,50 @@ class _RobotSdkVerbTool:
     # ----- override hooks ---------------------------------------------------
 
     async def _dispatch(self, args: dict[str, Any], ctx: ToolContext) -> CompletionVerdict:
-        """Dispatch to the agent_server's verb endpoint, or simulate if unwired.
+        """Dispatch to the addressed robot's agent_server verb endpoint.
 
         The verb name is the tool name without the ``robot_sdk.`` prefix.
+
+        With a fleet wired, a robot_id outside it is a typed failure the Brain
+        can correct — never a fabricated ``success`` verdict for a robot that
+        does not exist. ``_simulate`` is reachable only when the tool was
+        built with no fleet at all (standalone / harness plumbing tests).
         """
         robot_id = args.get("robot_id", ctx.robot_id)
+        verb = self.name.split(".", 1)[1]
+        if not self._adapters:
+            return await self._simulate(args, ctx)
         adapter = self._adapters.get(robot_id)
-        if isinstance(adapter, SupportsVerbs):
-            verb = self.name.split(".", 1)[1]
-            resp = await adapter.call_verb(verb, args)
-            try:
-                return CompletionVerdict.model_validate(resp)
-            except ValidationError as exc:
-                # A response that is not a CompletionVerdict is "not speaking
-                # the contract" — the same typed failure as unreachable (the
-                # wire clients set the precedent), never a raw ValidationError
-                # escaping into the loop (ISS-034).
-                raise RobotOfflineError(
-                    f"agent_server returned a malformed CompletionVerdict for verb '{verb}': {exc}",
-                    robot_id=robot_id,
-                    tool_name=self.name,
-                    module_name="tools.robot_sdk.verbs",
-                ) from exc
-        return await self._simulate(args, ctx)
+        if adapter is None:
+            raise RobotOfflineError(
+                f"unknown robot_id '{robot_id}' for verb '{verb}' — "
+                f"wired fleet: {sorted(self._adapters)}",
+                robot_id=robot_id,
+                tool_name=self.name,
+                module_name="tools.robot_sdk.verbs",
+            )
+        if not isinstance(adapter, SupportsVerbs):
+            raise HardwareNotReadyError(
+                f"adapter for robot '{robot_id}' does not implement on-robot verbs "
+                f"(SupportsVerbs) — cannot run '{verb}'",
+                robot_id=robot_id,
+                tool_name=self.name,
+                module_name="tools.robot_sdk.verbs",
+            )
+        resp = await adapter.call_verb(verb, args)
+        try:
+            return CompletionVerdict.model_validate(resp)
+        except ValidationError as exc:
+            # A response that is not a CompletionVerdict is "not speaking
+            # the contract" — the same typed failure as unreachable (the
+            # wire clients set the precedent), never a raw ValidationError
+            # escaping into the loop (ISS-034).
+            raise RobotOfflineError(
+                f"agent_server returned a malformed CompletionVerdict for verb '{verb}': {exc}",
+                robot_id=robot_id,
+                tool_name=self.name,
+                module_name="tools.robot_sdk.verbs",
+            ) from exc
 
     async def _simulate(self, args: dict[str, Any], ctx: ToolContext) -> CompletionVerdict:
         """Subclasses produce a verb-specific mock verdict."""
@@ -499,9 +547,10 @@ class MoveToPoseTool(_RobotSdkVerbTool):
     trajectory planning, joint servo, and collision avoidance — this verb does
     NOT degrade to harness-side trajectory control.
 
-    Contrast with :class:`VisualServoToTool` (closes a visual loop) and
-    :class:`RobotSdkTool` (low-level ``execute_action`` for already-resolved
-    targets the harness wants to send as-is).
+    Contrast with :class:`VisualServoToTool` (closes a visual loop),
+    :class:`MoveJointsTool` (joint-space direct drive for already-known joint
+    configurations), and :class:`RobotSdkTool` (low-level ``execute_action``
+    for already-resolved targets the harness wants to send as-is).
     """
 
     name = ROBOT_SDK_MOVE_TO_POSE
@@ -510,7 +559,9 @@ class MoveToPoseTool(_RobotSdkVerbTool):
         description=(
             "Plan and execute motion to a target end-effector pose.  On-robot "
             "runtime owns trajectory planning and joint servo; no visual "
-            "feedback loop (use visual_servo_to for that)."
+            "feedback loop (use visual_servo_to for that). If the target is "
+            "a known joint configuration rather than a pose, prefer "
+            "move_joints — joint-space drive tracks more reliably."
         ),
         input_schema={
             "type": "object",
@@ -523,6 +574,7 @@ class MoveToPoseTool(_RobotSdkVerbTool):
                     "default": "base",
                     "description": "Reference frame for target_pose.",
                 },
+                "gripper": _GRIPPER_SCHEMA,
                 "constraints": _CONSTRAINTS_SCHEMA,
             },
             "required": ["robot_id", "target_pose"],
@@ -562,7 +614,88 @@ class MoveToPoseTool(_RobotSdkVerbTool):
 
 
 # ---------------------------------------------------------------------------
-# 4. home --------------------------------------------------------------------
+# 4. move_joints -------------------------------------------------------------
+# ---------------------------------------------------------------------------
+
+
+class MoveJointsTool(_RobotSdkVerbTool):
+    """Drive the joints directly to a target configuration, joint-space direct.
+
+    Real-hardware feedback: joint-space direct drive tracks more reliably than
+    Cartesian end-pose tracking, so prefer this verb whenever the target joint
+    configuration is already *known* — taught waypoints and named
+    configurations recorded in the robot's workspace docs. Targets computed at
+    runtime (perception, grasp poses, memory) only exist as Cartesian poses
+    and must go through :class:`MoveToPoseTool` instead: the harness does no
+    IK, and the on-robot runtime only accepts joint targets as-is here.
+
+    The full joint target is harness-checkable, so ``to_safety_command``
+    exposes it as a ``joint`` command — SafetyEnvelope validates every joint
+    against ``safety.joint_limits_rad`` pre-dispatch (honest skip when no
+    limits are configured).
+    """
+
+    name = ROBOT_SDK_MOVE_JOINTS
+    schema = ToolSchema(
+        name=ROBOT_SDK_MOVE_JOINTS,
+        description=(
+            "Drive the arm joints directly to a target joint configuration "
+            "(radians); the on-robot runtime interpolates in joint space. "
+            "More reliable than Cartesian end-pose tracking — prefer it over "
+            "move_to_pose whenever the target joint configuration is already "
+            "known (e.g. a taught waypoint). Targets computed at runtime as "
+            "Cartesian poses must use move_to_pose instead; the harness does "
+            "no IK."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "robot_id": {"type": "string"},
+                "target_joints": _JOINTS_SCHEMA,
+                "gripper": _GRIPPER_SCHEMA,
+                "constraints": _CONSTRAINTS_SCHEMA,
+            },
+            "required": ["robot_id", "target_joints"],
+        },
+        output_schema={
+            "type": "object",
+            "properties": {
+                **COMPLETION_VERDICT_SCHEMA["properties"],
+                "final_joints": _JOINTS_SCHEMA,
+                "residual_error_rad": {
+                    "type": "number",
+                    "description": "Worst-joint residual to the target, radians.",
+                },
+            },
+            "required": COMPLETION_VERDICT_SCHEMA["required"],
+        },
+    )
+
+    def to_safety_command(self, args: dict[str, Any], ctx: ToolContext) -> EmbodimentCommand | None:
+        joints = args.get("target_joints")
+        if not joints:
+            return None
+        return EmbodimentCommand(
+            robot_id=args.get("robot_id", ctx.robot_id),
+            command_type="joint",
+            values=list(joints),
+        )
+
+    async def _simulate(self, args: dict[str, Any], ctx: ToolContext) -> CompletionVerdict:
+        target = args.get("target_joints", [0.0] * 6)
+        return CompletionVerdict(
+            outcome="success",
+            evidence=f"mock move_joints reached target={target}",
+            duration_s=1.0,
+            robot_state_snapshot={
+                "robot_id": args.get("robot_id", ctx.robot_id),
+                "final_joints": target,
+            },
+        )
+
+
+# ---------------------------------------------------------------------------
+# 5. home --------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 
 
@@ -610,7 +743,7 @@ class HomeTool(_RobotSdkVerbTool):
 
 
 # ---------------------------------------------------------------------------
-# 5. locomote_to -------------------------------------------------------------
+# 6. locomote_to -------------------------------------------------------------
 # ---------------------------------------------------------------------------
 
 
@@ -732,6 +865,7 @@ def build_robot_sdk_verb_tools(
         ReactiveGraspTool(adapters),
         VisualServoToTool(adapters),
         MoveToPoseTool(adapters),
+        MoveJointsTool(adapters),
         LocomoteToTool(adapters),
         HomeTool(adapters),
     ]
@@ -741,6 +875,7 @@ __all__ = [
     "COMPLETION_VERDICT_SCHEMA",
     "ROBOT_SDK_HOME",
     "ROBOT_SDK_LOCOMOTE_TO",
+    "ROBOT_SDK_MOVE_JOINTS",
     "ROBOT_SDK_MOVE_TO_POSE",
     "ROBOT_SDK_REACTIVE_GRASP",
     "ROBOT_SDK_VISUAL_SERVO_TO",
@@ -749,6 +884,7 @@ __all__ = [
     "CompletionVerdict",
     "HomeTool",
     "LocomoteToTool",
+    "MoveJointsTool",
     "MoveToPoseTool",
     "ReactiveGraspTool",
     "VisualServoToTool",

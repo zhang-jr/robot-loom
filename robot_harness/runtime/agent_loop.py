@@ -390,6 +390,11 @@ class AgentLoop:
         Brain needs for grounding (site semantics, standing orders) that the
         harness cannot discover and that is not runtime state (which is Memory's).
 
+        The task's robot assignment is stated in the opening user turn: the Brain
+        fills ``robot_id`` args from what it reads, and without this line its only
+        source is ROBOT.md prose — a stale workspace file then misaddresses every
+        call.
+
         Any cognitive scaffold (a plan/reflection set before the loop) is injected
         into the opening user turn. During the task, plan/reflection updates are
         visible via their tool results already in the conversation; re-injection is
@@ -400,6 +405,8 @@ class AgentLoop:
         if overlay:
             system = f"{_SYSTEM_PROMPT}\n\n{overlay}"
         sections = [f"Task: {task.description}"]
+        if task.robot_id:
+            sections.append(f"Assigned robot: {task.robot_id}")
         if task.constraints:
             sections.append(f"Constraints: {'; '.join(task.constraints)}")
         scaffold = self._ctx.format_scaffold_for_injection(task.robot_id)
@@ -452,7 +459,10 @@ class AgentLoop:
                     {
                         "id": tc.call_id,
                         "type": "function",
-                        "function": {"name": tc.tool_name, "arguments": json.dumps(tc.args)},
+                        "function": {
+                            "name": tc.tool_name,
+                            "arguments": json.dumps(tc.args, ensure_ascii=False),
+                        },
                     }
                     for tc in decision.tool_calls
                 ],
@@ -470,7 +480,7 @@ class AgentLoop:
         output = result.get("output") or {}
         facts = {k: v for k, v in output.items() if k not in self._OBSERVATION_BLOB_KEYS}
         if result.get("success"):
-            content = json.dumps(facts, default=str)
+            content = json.dumps(facts, default=str, ensure_ascii=False)
         else:
             payload: dict[str, Any] = {
                 "error": result.get("error"),
@@ -478,7 +488,7 @@ class AgentLoop:
             }
             if facts:
                 payload["output"] = facts
-            content = json.dumps(payload, default=str)
+            content = json.dumps(payload, default=str, ensure_ascii=False)
         return {"role": "tool", "tool_call_id": call_id, "content": content}
 
     @staticmethod

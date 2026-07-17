@@ -1,15 +1,25 @@
-"""Voice channel — Scenario A audio<->text shim (ADR-023).
+"""Voice channels — Scenario A, the user speaks to the agent (ADR-023 / ADR-037).
 
-Normalizes streaming voice access into the existing Channel text in/out contract:
-inbound ASR and outbound TTS both transcode at the boundary so the harness core
-only sees text. The ASR/TTS engines are always external (design principle 1); this
-package holds only thin streaming clients and the device/gateway ports.
+Two deployment shapes, one invariant (the harness core only ever sees text):
+
+- ``VoiceGatewayChannel`` — thin wire client to an external voice gateway
+  (sibling repo) that owns the full audio path (ingestion, VAD/AEC, streaming
+  ASR, session management, TTS playback) and delivers finalized utterances as
+  structured text (ADR-037).
+- ``VoiceChannel`` — direct-device path: this process owns mic/speaker and
+  transcodes at the boundary via thin ASR/TTS clients to external engines.
 """
 
 from __future__ import annotations
 
 from robot_harness.channels.voice.asr import ASRClient, AudioChunk, Transcript
 from robot_harness.channels.voice.channel import AudioSink, AudioSource, VoiceChannel
+from robot_harness.channels.voice.gateway import (
+    GatewayTransport,
+    GatewayUtterance,
+    VoiceGatewayChannel,
+    WebSocketGatewayTransport,
+)
 from robot_harness.channels.voice.tts import (
     SpeechChunk,
     TTSClient,
@@ -22,10 +32,14 @@ __all__ = [
     "AudioChunk",
     "AudioSink",
     "AudioSource",
+    "GatewayTransport",
+    "GatewayUtterance",
     "SpeechChunk",
     "TTSClient",
     "Transcript",
     "VoiceChannel",
+    "VoiceGatewayChannel",
+    "WebSocketGatewayTransport",
     "segment_stream",
     "split_for_tts",
 ]

@@ -3,7 +3,7 @@
 Commands:
   robot-loom init                 Initialise a workspace in ~/.robot-loom/workspace/
   robot-loom run --task TEXT      Run a task with the configured Brain
-  robot-loom serve                Run resident: channels (CLI / Telegram) → AgentLoop
+  robot-loom serve                Run resident: channels (CLI / Telegram / voice gateway) → AgentLoop
   robot-loom tool list            List registered tools
   robot-loom skill list           List registered skills
   robot-loom fleet status         Show fleet robot IDs from config
@@ -94,8 +94,9 @@ def _cmd_serve(args: argparse.Namespace) -> None:
         print("\n[robot-loom] serve stopped.", file=sys.stderr)  # noqa: T201
 
 
-def _build_channel(name: str, robot_id: str) -> Any:
-    """Construct one channel by name. Telegram needs TELEGRAM_BOT_TOKEN set."""
+def _build_channel(name: str, robot_id: str, config: Any) -> Any:
+    """Construct one channel by name. Telegram needs TELEGRAM_BOT_TOKEN set;
+    voice_gateway needs channels.voice_gateway.url in config.yaml (ADR-037)."""
     if name == "cli":
         from robot_harness.channels.cli import CLIChannel
 
@@ -104,6 +105,23 @@ def _build_channel(name: str, robot_id: str) -> Any:
         from robot_harness.channels.telegram import TelegramChannel
 
         return TelegramChannel(robot_id=robot_id)
+    if name == "voice_gateway":
+        from robot_harness.channels.voice.gateway import (
+            VoiceGatewayChannel,
+            WebSocketGatewayTransport,
+        )
+
+        gw = config.channels.voice_gateway
+        if not gw.url:
+            raise ValueError(
+                "voice_gateway channel requires channels.voice_gateway.url in config.yaml"
+            )
+        transport = WebSocketGatewayTransport(
+            gw.url,
+            token_env=gw.token_env,
+            reconnect_backoff_s=gw.reconnect_backoff_s,
+        )
+        return VoiceGatewayChannel(transport=transport, robot_id=robot_id)
     raise ValueError(f"unknown channel: {name!r}")
 
 
@@ -132,7 +150,7 @@ async def _async_serve(args: argparse.Namespace) -> None:
 
     manager = ChannelManager(agent_loop_factory)
     for name in channel_names:
-        manager.register(_build_channel(name, robot_id))
+        manager.register(_build_channel(name, robot_id, ctx.config))
 
     print(  # noqa: T201
         f"[robot-loom] serving channels={channel_names} robot={robot_id} "
@@ -182,7 +200,7 @@ async def _async_run(args: argparse.Namespace) -> None:
     )
 
     result = await loop.run(task)
-    print(json.dumps(result.model_dump(), indent=2, default=str))  # noqa: T201
+    print(json.dumps(result.model_dump(), indent=2, default=str, ensure_ascii=False))  # noqa: T201
     sys.exit(0 if result.outcome == "success" else 1)
 
 
@@ -221,9 +239,10 @@ def main() -> None:
     serve_run_p.add_argument(
         "--channel",
         action="append",
-        choices=["cli", "telegram"],
+        choices=["cli", "telegram", "voice_gateway"],
         help="Channel to serve; repeatable (default: cli). "
-        "telegram reads TELEGRAM_BOT_TOKEN from the environment.",
+        "telegram reads TELEGRAM_BOT_TOKEN from the environment; voice_gateway "
+        "reads channels.voice_gateway.url from config.yaml.",
     )
     serve_run_p.add_argument(
         "--robot-id",

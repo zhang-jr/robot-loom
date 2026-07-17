@@ -15,9 +15,11 @@ Keep OUT of this file:
 - Runtime world state — observations belong in Memory.
 -->
 
-Define your robot fleet here.
+Define your robot fleet here. Each `## <robot_id>` heading MUST be an id from
+`robot_ids` in config.yaml — the Brain addresses robots by these names, and a
+name that is not in the fleet fails every call addressed to it.
 
-## robot-0
+## <your-robot-id — replace with an id from config.yaml>
 
 - type: arm
 - dof: 6
@@ -35,5 +37,4 @@ Define your robot fleet here.
 
 ## Notes
 
-- Add more robots following the same format
-- robot_id must match the IDs in config.yaml
+- Add more robots following the same format, one `## <robot_id>` section each

@@ -189,6 +189,7 @@ class HarnessContext:
         from robot_harness.config.loader import load_config
         from robot_harness.embodiment.factory import build_catalog
         from robot_harness.skill.base import Skill
+        from robot_harness.skill.builtin.follow_joint_waypoints import FollowJointWaypointsSkill
         from robot_harness.skill.builtin.navigate_to import NavigateToSkill
         from robot_harness.skill.builtin.pick import PickSkill
         from robot_harness.skill.builtin.place import PlaceSkill
@@ -240,8 +241,9 @@ class HarnessContext:
         # action closed loop on the robot; execute_action is the low-level dispatch
         # skills use for gripper/joint moves. Registered here so both CLI and
         # programmatic callers get a functional act layer — and so the builtin
-        # skills' ``required_tools`` resolve. Verbs dispatch to a live/sim
-        # agent_server when the adapter supports them, else return a mock verdict.
+        # skills' ``required_tools`` resolve. Verbs dispatch to the addressed
+        # robot's live/sim/mock agent_server; a robot_id outside the wired fleet
+        # is a typed failure, never a simulated success.
         for verb_tool in build_robot_sdk_verb_tools(adapters):
             _register(verb_tool)
         _register(RobotSdkTool(adapters))
@@ -250,7 +252,12 @@ class HarnessContext:
         # ``skill.<name>`` callable via SkillRegistry.export_for_brain; the
         # AgentLoop routes the call to Skill.execute (skill_tools gates the
         # skill's internal hardware calls through SafetyEnvelope).
-        builtin_skills: tuple[Skill, ...] = (PickSkill(), PlaceSkill(), NavigateToSkill())
+        builtin_skills: tuple[Skill, ...] = (
+            PickSkill(),
+            PlaceSkill(),
+            NavigateToSkill(),
+            FollowJointWaypointsSkill(),
+        )
         for skill in builtin_skills:
             skill_registry.register(skill)
 

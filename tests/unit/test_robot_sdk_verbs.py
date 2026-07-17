@@ -13,12 +13,13 @@ from __future__ import annotations
 
 import pytest
 
-from robot_harness.errors import ToolCancelledError
+from robot_harness.errors import HardwareNotReadyError, RobotOfflineError, ToolCancelledError
 from robot_harness.tools.base import ToolContext, ToolRegistry
 from robot_harness.tools.robot_sdk import (
     COMPLETION_VERDICT_SCHEMA,
     ROBOT_SDK_HOME,
     ROBOT_SDK_LOCOMOTE_TO,
+    ROBOT_SDK_MOVE_JOINTS,
     ROBOT_SDK_MOVE_TO_POSE,
     ROBOT_SDK_REACTIVE_GRASP,
     ROBOT_SDK_VISUAL_SERVO_TO,
@@ -26,6 +27,7 @@ from robot_harness.tools.robot_sdk import (
     CompletionVerdict,
     HomeTool,
     LocomoteToTool,
+    MoveJointsTool,
     MoveToPoseTool,
     ReactiveGraspTool,
     VisualServoToTool,
@@ -51,6 +53,7 @@ def test_factory_returns_all_verbs() -> None:
         ROBOT_SDK_REACTIVE_GRASP,
         ROBOT_SDK_VISUAL_SERVO_TO,
         ROBOT_SDK_MOVE_TO_POSE,
+        ROBOT_SDK_MOVE_JOINTS,
         ROBOT_SDK_LOCOMOTE_TO,
         ROBOT_SDK_HOME,
     }
@@ -87,6 +90,7 @@ def test_unavailable_verbs_excludes_unadvertised_only() -> None:
         ROBOT_SDK_REACTIVE_GRASP,
         ROBOT_SDK_VISUAL_SERVO_TO,
         ROBOT_SDK_MOVE_TO_POSE,
+        ROBOT_SDK_MOVE_JOINTS,
     }
 
 
@@ -128,6 +132,21 @@ def test_move_to_pose_input_carries_frame_enum() -> None:
     schema = MoveToPoseTool.schema.input_schema
     assert set(schema["required"]) == {"robot_id", "target_pose"}
     assert schema["properties"]["frame"]["enum"] == ["base", "world", "tool"]
+    # placement waypoints carry a per-step gripper value on the same motion call
+    assert "gripper" in schema["properties"]
+
+
+def test_move_joints_input_requires_target_joints() -> None:
+    """Joint-space direct drive: the caller supplies the joint configuration;
+    gripper rides along optionally, exactly like move_to_pose."""
+    schema = MoveJointsTool.schema.input_schema
+    assert set(schema["required"]) == {"robot_id", "target_joints"}
+    assert schema["properties"]["target_joints"]["items"] == {"type": "number"}
+    assert "gripper" in schema["properties"]
+    out = MoveJointsTool.schema.output_schema
+    assert out is not None
+    assert "final_joints" in out["properties"]
+    assert "residual_error_rad" in out["properties"]
 
 
 def test_home_input_minimal() -> None:
@@ -142,7 +161,14 @@ def test_home_input_minimal() -> None:
 
 @pytest.mark.parametrize(
     "tool_cls",
-    [ReactiveGraspTool, VisualServoToTool, MoveToPoseTool, LocomoteToTool, HomeTool],
+    [
+        ReactiveGraspTool,
+        VisualServoToTool,
+        MoveToPoseTool,
+        MoveJointsTool,
+        LocomoteToTool,
+        HomeTool,
+    ],
 )
 def test_every_verb_publishes_completion_verdict_fields(tool_cls: type) -> None:
     out = tool_cls.schema.output_schema
@@ -214,6 +240,19 @@ async def test_move_to_pose_mock_dispatches_with_default_frame() -> None:
     )
     assert result.success is True
     assert (result.output or {})["outcome"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_move_joints_mock_returns_final_joints() -> None:
+    tool = MoveJointsTool()
+    target = [0.0, 0.5, -0.5, 0.0, 1.0, 0.0]
+    result = await tool.invoke(
+        {"robot_id": "robot-0", "target_joints": target},
+        _ctx(),
+    )
+    assert result.success is True
+    snap = (result.output or {}).get("robot_state_snapshot", {})
+    assert snap.get("final_joints") == target
 
 
 @pytest.mark.asyncio
@@ -312,6 +351,7 @@ def test_home_is_idempotent_others_are_not() -> None:
     assert ReactiveGraspTool().is_idempotent is False
     assert VisualServoToTool().is_idempotent is False
     assert MoveToPoseTool().is_idempotent is False
+    assert MoveJointsTool().is_idempotent is False
 
 
 def test_all_verbs_are_cancellable() -> None:
@@ -401,7 +441,6 @@ async def test_malformed_verdict_from_agent_server_is_typed_offline_error() -> N
     """A response that is not a CompletionVerdict is 'not speaking the
     contract' — a typed RobotOfflineError, never a raw ValidationError
     escaping into the loop (ISS-034)."""
-    from robot_harness.errors import RobotOfflineError
 
     class _GarbageVerbAdapter:
         async def call_verb(self, verb: str, payload: dict[str, object]) -> dict[str, object]:
@@ -413,3 +452,63 @@ async def test_malformed_verdict_from_agent_server_is_typed_offline_error() -> N
     tool = HomeTool({"robot-0": _GarbageVerbAdapter()})
     with pytest.raises(RobotOfflineError, match="malformed CompletionVerdict"):
         await tool.invoke({"robot_id": "robot-0"}, _ctx())
+
+
+# ---------------------------------------------------------------------------
+# Unknown robot_id with a wired fleet is a typed failure, never a mock
+# ---------------------------------------------------------------------------
+
+
+class _CannedVerbAdapter:
+    """Minimal SupportsVerbs adapter — dispatch must never fall through it."""
+
+    async def call_verb(self, verb: str, payload: dict[str, object]) -> dict[str, object]:
+        return {"outcome": "success", "evidence": f"live {verb}", "aborted_by": "none"}
+
+    async def available_verbs(self) -> list[str] | None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_unknown_robot_id_with_wired_fleet_raises_typed_error() -> None:
+    """A robot_id outside the wired fleet must raise a RobotOfflineError naming
+    the fleet (so the Brain can correct it) — never a fabricated mock success
+    verdict for a robot that does not exist."""
+    tool = ReactiveGraspTool({"go2-01": _CannedVerbAdapter()})
+    with pytest.raises(RobotOfflineError, match=r"wired fleet.*go2-01"):
+        await tool.invoke(
+            {"robot_id": "robot-0", "target_hint": {"kind": "phrase", "phrase": "bottle"}},
+            _ctx(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_wired_adapter_without_verb_capability_raises_typed_error() -> None:
+    """A wired adapter that cannot run verbs must fail typed, not simulate."""
+    tool = HomeTool({"robot-0": object()})
+    with pytest.raises(HardwareNotReadyError, match="does not implement on-robot verbs"):
+        await tool.invoke({"robot_id": "robot-0"}, _ctx())
+
+
+@pytest.mark.asyncio
+async def test_no_fleet_wired_still_simulates() -> None:
+    """A tool built with NO adapters at all keeps the simulated-verdict path
+    (standalone / harness plumbing tests) — the wired-fleet guard narrows the
+    fallback, it does not remove it."""
+    tool = HomeTool()
+    result = await tool.invoke({"robot_id": "anything"}, _ctx())
+    assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_execute_action_unknown_robot_id_raises_typed_error() -> None:
+    """Same guard, low-level dispatch flavor: execute_action with a wired fleet
+    must not return a fabricated mock handle for an unknown robot_id."""
+    from robot_harness.tools.robot_sdk.http_adapter import RobotSdkTool
+
+    tool = RobotSdkTool({"go2-01": _CannedVerbAdapter()})  # type: ignore[dict-item]
+    with pytest.raises(RobotOfflineError, match=r"wired fleet.*go2-01"):
+        await tool.invoke(
+            {"robot_id": "robot-0", "command_type": "joint", "values": [0.0] * 6},
+            _ctx(),
+        )

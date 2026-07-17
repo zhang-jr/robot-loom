@@ -7,15 +7,15 @@ Implements the existing ``Channel`` Protocol (text in / text out, see
   outbound: ``ChannelResponse.text`` -> sentence split -> streaming TTS -> audio sink
 
 The harness core (Brain / bus / AgentLoop) only ever sees text — audio never
-crosses the boundary (invariant, ADR-023 Scenario A). The same class adapts to
-two deployment shapes through the ``AudioSource`` / ``AudioSink`` ports:
-
-  - edge voice gateway: source/sink are a WS to the process that owns the audio
-    device — keeps the realtime VAD/ASR loop off the Brain's 1-7Hz path (principle 4).
-  - direct device: source/sink wrap a local mic/speaker.
-
-The ASR/TTS engines themselves are external servers; this class reaches them only
+crosses the boundary (invariant, ADR-023 Scenario A). This class is the
+*direct-device* path: the harness process owns the mic/speaker through the
+``AudioSource`` / ``AudioSink`` ports and drives external ASR/TTS engines
 through the ``ASRClient`` / ``TTSClient`` thin clients (design principle 1).
+
+Deployments where a separate process owns the audio devices go through the
+external voice gateway instead (``VoiceGatewayChannel``, ADR-037): the gateway
+runs the realtime capture/VAD/ASR/session loop and delivers finalized
+utterances as text, so no audio reaches this process at all.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from robot_harness.observability.tracer import tracer
 
 @runtime_checkable
 class AudioSource(Protocol):
-    """Inbound audio source (local mic device, or a WS to the voice gateway)."""
+    """Inbound audio source owned by this process (local mic device)."""
 
     def frames(self) -> AsyncIterator[AudioChunk]: ...
 
@@ -42,7 +42,7 @@ class AudioSource(Protocol):
 
 @runtime_checkable
 class AudioSink(Protocol):
-    """Outbound audio sink (local speaker device, or a WS to the voice gateway)."""
+    """Outbound audio sink owned by this process (local speaker device)."""
 
     async def play(self, chunk: SpeechChunk) -> None: ...
 

@@ -174,8 +174,10 @@ class SupportsVerbs(Protocol):
     Deliberately kept OFF the core ``EmbodimentAdapter`` Protocol: verbs are
     heterogeneous per robot (some bodies implement only a subset), so "can run
     verbs" is an additive capability, not part of the contract every backend must
-    satisfy. Both real-hardware and simulator agent_server adapters implement it;
-    a pure mock backend does not, and verb tools fall back to a simulated verdict.
+    satisfy. The whole agent_server adapter family implements it (real, sim, and
+    the mock client — canned verdicts). A wired adapter WITHOUT this capability
+    makes verb dispatch a typed ``HardwareNotReadyError``, never a simulated
+    success.
 
     Owned by the embodiment layer so the dependency points downward:
     ``tools/robot_sdk`` imports this to gate dispatch, not the other way around.

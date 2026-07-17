@@ -139,3 +139,17 @@ async def test_system_prompt_unchanged_without_workspace_files(tmp_workspace: Pa
     system = brain.seen_messages[0]
     assert system["role"] == "system"
     assert "Operator standing context" not in system["content"]
+
+
+@pytest.mark.asyncio
+async def test_opening_user_turn_states_assigned_robot(tmp_workspace: Path) -> None:
+    """The robot assignment is a conversation fact, not a ROBOT.md inference:
+    the Brain fills robot_id args from what it reads, and a stale workspace
+    ROBOT.md otherwise misaddresses every call."""
+    brain = _CapturingBrain()
+    await AgentLoop(brain, HarnessContext.build(), max_turns=2).run(_task())
+
+    user = brain.seen_messages[1]
+    assert user["role"] == "user"
+    assert "Task: test task" in user["content"]
+    assert "Assigned robot: robot-0" in user["content"]
