@@ -51,6 +51,7 @@ from robot_harness.runtime.skill_tools import SafetyGatedToolRegistry
 from robot_harness.skill.base import Skill, Subtask
 from robot_harness.tools.base import BrainProfile, ToolContext, ToolRegistry, ToolResult
 from robot_harness.tools.outbound import NullOutbound, OutboundHandle
+from robot_harness.tools.robot_sdk.verbs import ROBOT_SDK_RUN_TAUGHT_MOTION
 
 _SYSTEM_PROMPT = """\
 You are a robot task planner. You have access to tools that control robot hardware.
@@ -139,7 +140,15 @@ class AgentLoop:
         brain_profile = BrainProfile(name="openai")
         # Live-capability gate (ADR-019): tools no robot can currently run — and
         # skills requiring them — never enter the Brain's planning vocabulary.
+        # Refresh first: run_taught_motion's vocabulary IS its motion names, so
+        # the gate below can only judge it once discovery has run.
+        await self._ctx.refresh_taught_motions(trace_id)
         unavailable = await self._ctx.unavailable_tool_names(trace_id)
+        catalog = self._ctx.taught_motions
+        if catalog is None or catalog.is_empty():
+            # No robot advertises a taught motion — a verb whose only argument
+            # has no legal value must not appear in the Brain's vocabulary.
+            unavailable = unavailable | {ROBOT_SDK_RUN_TAUGHT_MOTION}
         tool_specs = self._ctx.tool_registry.export_for_brain(
             brain_profile, exclude_names=unavailable
         )
@@ -842,13 +851,16 @@ class AgentLoop:
         # the task, and cancels the turn's sibling calls.
         registry = self._ctx.tool_registry
         if registry.requires_safety_check(req.tool_name):
-            cmd = registry.build_safety_command(req.tool_name, req.args, ctx)
-            if cmd is not None:
-                await self._ctx.safety_envelope.check(
-                    cmd,
-                    trace_id=ctx.trace_id,
-                    subtask_id=ctx.subtask_id,
-                )
+            # Plural: one call may actuate a whole sequence (a taught motion),
+            # and every target must clear the envelope BEFORE the first moves.
+            cmds = registry.build_safety_commands(req.tool_name, req.args, ctx)
+            if cmds:
+                for cmd in cmds:
+                    await self._ctx.safety_envelope.check(
+                        cmd,
+                        trace_id=ctx.trace_id,
+                        subtask_id=ctx.subtask_id,
+                    )
             else:
                 # Hardware-bound but no harness-checkable target (e.g. a phrase
                 # hint): honest "skipped" audit — never indistinguishable from

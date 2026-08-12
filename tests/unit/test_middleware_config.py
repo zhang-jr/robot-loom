@@ -220,13 +220,13 @@ def test_middleware_forwards_hardware_markers() -> None:
     assert registry.requires_safety_check("robot_sdk.execute_action")
     from robot_harness.tools.base import ToolContext
 
-    cmd = registry.build_safety_command(
+    cmds = registry.build_safety_commands(
         "robot_sdk.execute_action",
         {"robot_id": "r0", "command_type": "cartesian", "values": [0.1, 0.2, 0.3]},
         ToolContext.create("r0"),
     )
-    assert cmd is not None
-    assert cmd.values == [0.1, 0.2, 0.3]
+    assert len(cmds) == 1
+    assert cmds[0].values == [0.1, 0.2, 0.3]
 
 
 def test_harness_context_applies_default_middleware() -> None:

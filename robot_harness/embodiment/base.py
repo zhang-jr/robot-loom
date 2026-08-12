@@ -190,3 +190,22 @@ class SupportsVerbs(Protocol):
 
     async def call_verb(self, verb: str, payload: dict[str, Any]) -> dict[str, Any]: ...
     async def available_verbs(self) -> list[str] | None: ...
+
+
+@runtime_checkable
+class SupportsTaughtMotions(Protocol):
+    """Optional capability: a backend that advertises named taught motions.
+
+    A *taught motion* is a joint-waypoint sequence demonstrated on one body and
+    stored on its agent_server under a name. The harness discovers the catalog
+    from ``/health.taught_motions`` so the Brain can run one by name instead of
+    re-emitting its joint angles, and so the SafetyEnvelope can validate every
+    waypoint before the first one is dispatched.
+
+    Split out from :class:`SupportsVerbs` rather than folded into it: verbs and
+    taught motions are independently optional (a body may run verbs and have
+    been taught nothing), and widening a ``runtime_checkable`` Protocol would
+    silently reclassify every existing verb-capable backend as non-conforming.
+    """
+
+    async def taught_motions(self) -> list[dict[str, Any]]: ...

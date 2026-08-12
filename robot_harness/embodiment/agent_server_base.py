@@ -161,6 +161,26 @@ class AgentServerAdapter:
             return None
         return [str(v) for v in verbs]
 
+    async def taught_motions(self) -> list[dict[str, Any]]:
+        """Motions this body has been taught, from ``/health.taught_motions``.
+
+        Same liveness semantics as :meth:`available_verbs` — read fresh, because
+        a re-taught tray or a reloaded catalog changes the answer without a
+        restart. Returns raw dicts (``{name, description, points}``); the
+        robot_sdk layer parses and validates them, so a backend that advertises
+        a malformed entry loses that entry, not the fleet.
+
+        An absent or non-list key means "this backend has no taught motions" —
+        the empty list. Unlike ``available_verbs`` there is no third "unknown"
+        state to preserve: nothing is pruned on the strength of this answer, so
+        absent and empty lead to the same place (no motion is offered).
+        """
+        health = await self._client.health()
+        motions = health.get("taught_motions")
+        if not isinstance(motions, list):
+            return []
+        return [m for m in motions if isinstance(m, dict)]
+
     async def abort(self, trace_id: str = "") -> dict[str, Any]:
         """Stop the in-flight action / verb on the robot (agent_server ``/abort``).
 

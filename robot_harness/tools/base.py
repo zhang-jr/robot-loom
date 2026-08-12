@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from robot_harness.tools.artifacts import ArtifactStore
     from robot_harness.tools.outbound import OutboundHandle
 
-    SafetyCommandBuilder = Callable[[dict[str, Any], "ToolContext"], "EmbodimentCommand | None"]
+    SafetyCommandBuilder = Callable[[dict[str, Any], "ToolContext"], "list[EmbodimentCommand]"]
 
 
 @dataclass
@@ -163,6 +163,25 @@ class BrainProfile(BaseModel):
 BrainToolSpec = dict[str, Any]
 
 
+def _resolve_safety_builder(tool: Tool) -> SafetyCommandBuilder | None:
+    """Normalise a hardware tool's safety hook to the plural form.
+
+    A tool declares either ``to_safety_commands`` (a sequence — for calls that
+    actuate more than one target) or the singular ``to_safety_command``, which
+    stays the common case: most verbs carry exactly one pose or joint target.
+    Both collapse to "the list of commands this call actuates" here, so the gate
+    has one shape to consume. A tool with neither hook yields None — hardware-
+    bound but not harness-checkable.
+    """
+    plural = getattr(tool, "to_safety_commands", None)
+    if plural is not None:
+        return lambda args, ctx: list(plural(args, ctx))
+    singular = getattr(tool, "to_safety_command", None)
+    if singular is not None:
+        return lambda args, ctx: [cmd] if (cmd := singular(args, ctx)) is not None else []
+    return None
+
+
 class ToolRegistry:
     """Central registry for all tools visible to the Brain.
 
@@ -180,28 +199,34 @@ class ToolRegistry:
         Tools that actuate the robot (``hardware_bound``) are recorded so the
         AgentLoop runs SafetyEnvelope.check() before invoking them. Overwriting
         also resets that record — a stale entry would keep gating the name with
-        the REPLACED tool's ``to_safety_command`` (ISS-039).
+        the REPLACED tool's safety-command builder (ISS-039).
         """
         self._safety_gated.pop(tool.name, None)
         if getattr(tool, "hardware_bound", False):
-            self._safety_gated[tool.name] = getattr(tool, "to_safety_command", None)
+            self._safety_gated[tool.name] = _resolve_safety_builder(tool)
         self._tools[tool.name] = tool
 
     def requires_safety_check(self, name: str) -> bool:
         """True if *name* actuates the robot and must pass SafetyEnvelope first."""
         return name in self._safety_gated
 
-    def build_safety_command(
+    def build_safety_commands(
         self, name: str, args: dict[str, Any], ctx: ToolContext
-    ) -> EmbodimentCommand | None:
-        """Build the EmbodimentCommand a hardware-bound tool validates against.
+    ) -> list[EmbodimentCommand]:
+        """Every EmbodimentCommand this call will actuate, for the envelope to validate.
 
-        Returns None when the call carries no harness-checkable target; the
-        on-robot safety reflex is then the authoritative check.
+        Plural because one tool call may drive a whole sequence: a taught motion
+        is one call over many joint targets, and the gate is only meaningful if
+        it sees all of them BEFORE the first one moves (checking point 7 after
+        points 1-6 executed is not a pre-dispatch gate).
+
+        An empty list means the call carries no harness-checkable target; the
+        on-robot safety reflex is then the authoritative check and the caller
+        must record an honest "skipped" audit rather than a "passed" one.
         """
         builder = self._safety_gated.get(name)
         if builder is None:
-            return None
+            return []
         return builder(args, ctx)
 
     def get(self, name: str) -> Tool:
@@ -263,14 +288,39 @@ class ToolRegistry:
         return [s.to_openai_function() for s in schemas]
 
     def validate_args(self, tool_name: str, args: dict[str, Any]) -> None:
-        """Raise :exc:`ToolSchemaViolationError` if args miss required fields."""
+        """Raise :exc:`ToolSchemaViolationError` for missing required args or bad enums.
+
+        Enum enforcement covers top-level properties only. It matters because an
+        enum is the schema's way of saying "these are the only legal values" —
+        left unchecked (as a hint the Brain may ignore), a closed vocabulary like
+        a taught-motion name becomes an invented string that costs a round trip
+        to the robot to reject. Failing here instead hands the Brain the legal
+        values in the error, on the same turn.
+        """
         tool = self.get(tool_name)
-        required = tool.schema.input_schema.get("required", [])
+        input_schema = tool.schema.input_schema
+        required = input_schema.get("required", [])
         missing = [r for r in required if r not in args]
         if missing:
             raise ToolSchemaViolationError(
                 f"Tool '{tool_name}' missing required args: {missing}",
                 violations=[f"missing: {m}" for m in missing],
+                tool_name=tool_name,
+            )
+
+        violations: list[str] = []
+        for prop, spec in (input_schema.get("properties") or {}).items():
+            if not isinstance(spec, dict) or prop not in args:
+                continue
+            allowed = spec.get("enum")
+            # An absent enum means "any value of this type"; an empty one is a
+            # schema bug, not a rule that rejects everything.
+            if allowed and args[prop] not in allowed:
+                violations.append(f"{prop}={args[prop]!r} not in {sorted(map(str, allowed))}")
+        if violations:
+            raise ToolSchemaViolationError(
+                f"Tool '{tool_name}' got out-of-enum args: {'; '.join(violations)}",
+                violations=violations,
                 tool_name=tool_name,
             )
 

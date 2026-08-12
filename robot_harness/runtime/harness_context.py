@@ -7,7 +7,12 @@ import uuid
 from dataclasses import dataclass, field
 
 from robot_harness.config.schema import HarnessConfig
-from robot_harness.embodiment.base import EmbodimentAdapter, Frame, SupportsVerbs
+from robot_harness.embodiment.base import (
+    EmbodimentAdapter,
+    Frame,
+    SupportsTaughtMotions,
+    SupportsVerbs,
+)
 from robot_harness.errors import RobotOfflineError
 from robot_harness.memory.base import Memory
 from robot_harness.observability.tracer import tracer
@@ -18,6 +23,7 @@ from robot_harness.tools.base import BrainProfile, ToolRegistry
 from robot_harness.tools.cognitive.base import CognitiveScaffoldStore
 from robot_harness.tools.cognitive.plan_tool import PlannerStore, PlanTool
 from robot_harness.tools.cognitive.reflection_tool import ReflectionStore, ReflectionTool
+from robot_harness.tools.robot_sdk.taught_motion import TaughtMotionCatalog, parse_taught_motions
 
 
 @dataclass
@@ -45,6 +51,10 @@ class HarnessContext:
     scaffold_stores: dict[str, list[CognitiveScaffoldStore]] = field(default_factory=dict)
     # robot_id → EmbodimentAdapter (populated at session start for each robot)
     embodiment_adapters: dict[str, EmbodimentAdapter] = field(default_factory=dict)
+    # Shared by reference with RunTaughtMotionTool: refreshed from /health at task
+    # start, read by the tool for both its name enum and its safety commands.
+    # None when no verb tools were built (nothing reads it).
+    taught_motions: TaughtMotionCatalog | None = None
 
     def get_adapter(self, robot_id: str) -> EmbodimentAdapter | None:
         """Return the EmbodimentAdapter for *robot_id*, or None if not registered."""
@@ -130,6 +140,56 @@ class HarnessContext:
                 excluded_tools=sorted(excluded),
             )
         return excluded
+
+    async def refresh_taught_motions(self, trace_id: str = "") -> None:
+        """Re-read every robot's taught-motion catalog from ``/health``.
+
+        Called at task start, next to the verb gate, because both answer the
+        same question ("what can this fleet do right now?") from the same
+        endpoint. Kept as its own method rather than folded into
+        :meth:`unavailable_tool_names` so neither one lies about what it does:
+        that one computes an exclusion set, this one refreshes shared state.
+
+        The catalog object is shared with ``RunTaughtMotionTool``, so refreshing
+        it updates both the Brain's name enum and the envelope's view of the
+        waypoints in one step. A robot whose ``/health`` is unreachable is
+        FORGOTTEN rather than left stale: offering a name whose points we can no
+        longer verify would let the envelope check a trajectory the robot may
+        have since re-taught.
+        """
+        if self.taught_motions is None or not self.embodiment_adapters:
+            return
+
+        async def probe(robot_id: str, adapter: SupportsTaughtMotions) -> None:
+            try:
+                raw = await adapter.taught_motions()
+            except RobotOfflineError as exc:
+                tracer.event(
+                    "harness.taught_motion_probe_offline",
+                    trace_id=trace_id,
+                    robot_id=robot_id,
+                    reason=str(exc),
+                )
+                self.taught_motions.forget(robot_id)  # type: ignore[union-attr]
+                return
+            self.taught_motions.replace(robot_id, parse_taught_motions(raw))  # type: ignore[union-attr]
+
+        capable = [
+            (rid, adapter)
+            for rid, adapter in self.embodiment_adapters.items()
+            if isinstance(adapter, SupportsTaughtMotions)
+        ]
+        if not capable:
+            return
+        await asyncio.gather(*(probe(rid, a) for rid, a in capable))
+        names = self.taught_motions.names()
+        if names:
+            tracer.event(
+                "harness.taught_motions",
+                trace_id=trace_id,
+                robot_ids=sorted(rid for rid, _ in capable),
+                motions=names,
+            )
 
     def get_scaffold_stores(self, robot_id: str) -> list[CognitiveScaffoldStore]:
         """Return (or lazily create) the cognitive scaffold stores for a robot."""
@@ -244,7 +304,12 @@ class HarnessContext:
         # skills' ``required_tools`` resolve. Verbs dispatch to the addressed
         # robot's live/sim/mock agent_server; a robot_id outside the wired fleet
         # is a typed failure, never a simulated success.
-        for verb_tool in build_robot_sdk_verb_tools(adapters):
+        # Shared with run_taught_motion; filled by refresh_taught_motions() at
+        # task start. Empty here, so before the first probe the verb has no valid
+        # motion name — which is correct: the harness must not claim a body knows
+        # a motion it has not advertised.
+        taught_motions = TaughtMotionCatalog()
+        for verb_tool in build_robot_sdk_verb_tools(adapters, taught_motions):
             _register(verb_tool)
         _register(RobotSdkTool(adapters))
 
@@ -268,4 +333,5 @@ class HarnessContext:
             safety_envelope=safety_envelope,
             memory=mem,
             embodiment_adapters=adapters,
+            taught_motions=taught_motions,
         )

@@ -52,6 +52,11 @@ Reference contrast (ADR-019):
 """
 
 from robot_harness.tools.robot_sdk.http_adapter import RobotSdkTool
+from robot_harness.tools.robot_sdk.taught_motion import (
+    TaughtMotion,
+    TaughtMotionCatalog,
+    TaughtPoint,
+)
 from robot_harness.tools.robot_sdk.verbs import (
     COMPLETION_VERDICT_SCHEMA,
     ROBOT_SDK_HOME,
@@ -59,6 +64,7 @@ from robot_harness.tools.robot_sdk.verbs import (
     ROBOT_SDK_MOVE_JOINTS,
     ROBOT_SDK_MOVE_TO_POSE,
     ROBOT_SDK_REACTIVE_GRASP,
+    ROBOT_SDK_RUN_TAUGHT_MOTION,
     ROBOT_SDK_VISUAL_SERVO_TO,
     VERB_TOOL_NAMES,
     CompletionOutcome,
@@ -68,6 +74,7 @@ from robot_harness.tools.robot_sdk.verbs import (
     MoveJointsTool,
     MoveToPoseTool,
     ReactiveGraspTool,
+    RunTaughtMotionTool,
     VisualServoToTool,
     build_robot_sdk_verb_tools,
     unavailable_verb_tool_names,
@@ -80,6 +87,7 @@ __all__ = [
     "ROBOT_SDK_MOVE_JOINTS",
     "ROBOT_SDK_MOVE_TO_POSE",
     "ROBOT_SDK_REACTIVE_GRASP",
+    "ROBOT_SDK_RUN_TAUGHT_MOTION",
     "ROBOT_SDK_VISUAL_SERVO_TO",
     "VERB_TOOL_NAMES",
     "CompletionOutcome",
@@ -90,6 +98,10 @@ __all__ = [
     "MoveToPoseTool",
     "ReactiveGraspTool",
     "RobotSdkTool",
+    "RunTaughtMotionTool",
+    "TaughtMotion",
+    "TaughtMotionCatalog",
+    "TaughtPoint",
     "VisualServoToTool",
     "build_robot_sdk_verb_tools",
     "unavailable_verb_tool_names",
