@@ -33,6 +33,7 @@ from robot_harness.embodiment.base import (
     DispatchHandle,
     EmbodimentCommand,
     Frame,
+    RobotFault,
     RobotState,
     RobotType,
     SafetyVerdict,
@@ -180,6 +181,37 @@ class AgentServerAdapter:
         if not isinstance(motions, list):
             return []
         return [m for m in motions if isinstance(m, dict)]
+
+    async def fault_status(self) -> RobotFault | None:
+        """This body's latched fault, from ``/health.robot_status`` / ``fault``.
+
+        Read fresh alongside the other ``/health`` probes: a fault appears, and
+        an operator clears it, without anything restarting on this side.
+
+        Returns ``None`` for a healthy body AND for a backend that predates the
+        latch (a v0.1 agent_server reports neither key). Nothing is gated on this
+        answer — the verb list already prunes a faulted body's capabilities — so
+        the two need not stay distinguishable; see :class:`SupportsFaultStatus`.
+
+        A malformed ``fault`` object degrades to a fault with no detail rather
+        than raising: that the body is latched matters more than why, and the
+        alternative is losing the signal entirely to a typo upstream.
+        """
+        health = await self._client.health()
+        if health.get("robot_status") != "fault":
+            return None
+        raw = health.get("fault")
+        raw = raw if isinstance(raw, dict) else {}
+        try:
+            since_s = float(raw.get("since_s", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            since_s = 0.0
+        return RobotFault(
+            robot_id=self.robot_id,
+            code=str(raw.get("code", "")),
+            reason=str(raw.get("reason", "")),
+            since_s=since_s,
+        )
 
     async def abort(self, trace_id: str = "") -> dict[str, Any]:
         """Stop the in-flight action / verb on the robot (agent_server ``/abort``).

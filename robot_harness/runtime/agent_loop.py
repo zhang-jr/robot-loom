@@ -30,6 +30,7 @@ from robot_harness.brain.prompt_assembly import workspace_prompt_overlay
 from robot_harness.critic.base import Critic, CriticVerdict
 from robot_harness.critic.heuristic_fallback import HeuristicCritic
 from robot_harness.critic.replan_policy import ReplanPolicy, SensorHeuristic
+from robot_harness.embodiment.base import RobotFault
 from robot_harness.errors import (
     BrainOutputInvalidError,
     ChannelError,
@@ -156,8 +157,12 @@ class AgentLoop:
             brain_profile, unavailable_tools=unavailable
         )
         all_tool_results: list[dict[str, Any]] = []
+        # A latched body advertises no verbs, so the gate above has already taken
+        # it out of the plan; this reads the reason so the opening turn can say
+        # WHY, instead of leaving the Brain to infer it from missing tools.
+        faults = await self._ctx.faulted_robots(trace_id)
         # The loop owns the conversation (ADR-025); it grows across turns.
-        messages = self._initial_messages(task, trace_id)
+        messages = self._initial_messages(task, trace_id, faults=faults)
         replan_count = 0
         ask_count = 0
         nudged = False
@@ -391,7 +396,12 @@ class AgentLoop:
     # Conversation helpers (native tool-use message protocol, ADR-025)
     # ------------------------------------------------------------------
 
-    def _initial_messages(self, task: Task, trace_id: str = "") -> list[Message]:
+    def _initial_messages(
+        self,
+        task: Task,
+        trace_id: str = "",
+        faults: dict[str, RobotFault] | None = None,
+    ) -> list[Message]:
         """Build the opening ``[system, user]`` conversation for a task.
 
         The system turn is the static harness prompt plus the workspace standing
@@ -403,6 +413,13 @@ class AgentLoop:
         fills ``robot_id`` args from what it reads, and without this line its only
         source is ROBOT.md prose — a stale workspace file then misaddresses every
         call.
+
+        ``faults`` (latched bodies, probed just above) rides in the *user* turn
+        for the same reason the assignment does: it is runtime state, and runtime
+        state does not belong in the standing context (see prompt_assembly). Told
+        here, the Brain knows a body is out of service before it plans; left out,
+        it either watches its tools vanish for no stated reason (single robot) or
+        keeps addressing a body that refuses every verb (fleet).
 
         Any cognitive scaffold (a plan/reflection set before the loop) is injected
         into the opening user turn. During the task, plan/reflection updates are
@@ -416,6 +433,9 @@ class AgentLoop:
         sections = [f"Task: {task.description}"]
         if task.robot_id:
             sections.append(f"Assigned robot: {task.robot_id}")
+        fault_notice = self._format_faults(task, faults or {})
+        if fault_notice:
+            sections.append(fault_notice)
         if task.constraints:
             sections.append(f"Constraints: {'; '.join(task.constraints)}")
         scaffold = self._ctx.format_scaffold_for_injection(task.robot_id)
@@ -425,6 +445,35 @@ class AgentLoop:
             {"role": "system", "content": system},
             {"role": "user", "content": "\n\n".join(sections)},
         ]
+
+    @staticmethod
+    def _format_faults(task: Task, faults: dict[str, RobotFault]) -> str:
+        """One paragraph naming every latched body, assigned one first.
+
+        States the remedy (an operator resets it) and forbids the failure mode
+        this exists to prevent: a Brain that reads "failed" as "try again" and
+        burns its turns re-dispatching at a body that refuses everything.
+        """
+        if not faults:
+            return ""
+        order = sorted(faults, key=lambda rid: (rid != task.robot_id, rid))
+        lines = []
+        for rid in order:
+            fault = faults[rid]
+            detail = f" ({fault.code}: {fault.reason})" if fault.reason else f" ({fault.code})"
+            lines.append(f"- {rid}{detail}")
+        assigned_is_down = task.robot_id in faults
+        head = (
+            "The robot assigned to this task is FAULTED and will refuse every verb:"
+            if assigned_is_down
+            else "These robots are FAULTED and will refuse every verb:"
+        )
+        tail = (
+            "Only a human operator can clear a fault (POST /reset on that robot). "
+            "Do not retry the verb and do not try another way to move that body — "
+            "say what is blocked and why, then stop."
+        )
+        return "\n".join([head, *lines, tail])
 
     @staticmethod
     def _assign_call_ids(decision: BrainDecision, turn: int) -> None:

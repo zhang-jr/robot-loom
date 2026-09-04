@@ -10,6 +10,8 @@ from robot_harness.config.schema import HarnessConfig
 from robot_harness.embodiment.base import (
     EmbodimentAdapter,
     Frame,
+    RobotFault,
+    SupportsFaultStatus,
     SupportsTaughtMotions,
     SupportsVerbs,
 )
@@ -140,6 +142,62 @@ class HarnessContext:
                 excluded_tools=sorted(excluded),
             )
         return excluded
+
+    async def faulted_robots(self, trace_id: str = "") -> dict[str, RobotFault]:
+        """Robots currently latched in FAULT, keyed by robot_id.
+
+        Kept as its own probe rather than folded into
+        :meth:`unavailable_tool_names` for the same reason
+        :meth:`refresh_taught_motions` is — that one computes an exclusion set,
+        this one reports why a body is out of service — at the cost of one extra
+        ``/health`` GET per robot at task start.
+
+        Purely informational: a latched body already advertises zero verbs, so
+        the capability gate has done the *stopping* by the time this runs. What
+        it adds is the reason, which the gate cannot carry. That split matters
+        for a fleet: the gate takes the union across robots, so with one healthy
+        peer nothing is pruned and a call addressed to the faulted body fails at
+        dispatch — the Brain needs to have been told which body is down, not
+        just discover it mid-plan.
+
+        A robot whose ``/health`` is unreachable is omitted, not guessed at:
+        offline is a different condition with its own error path, and inventing
+        a fault for it would put words in the operator's mouth.
+        """
+        capable = [
+            (rid, adapter)
+            for rid, adapter in self.embodiment_adapters.items()
+            if isinstance(adapter, SupportsFaultStatus)
+        ]
+        if not capable:
+            return {}
+
+        async def probe(robot_id: str, adapter: SupportsFaultStatus) -> RobotFault | None:
+            try:
+                return await adapter.fault_status()
+            except RobotOfflineError as exc:
+                tracer.event(
+                    "harness.fault_probe_offline",
+                    trace_id=trace_id,
+                    robot_id=robot_id,
+                    reason=str(exc),
+                )
+                return None
+
+        results = await asyncio.gather(*(probe(rid, a) for rid, a in capable))
+        faults = {
+            rid: fault
+            for (rid, _), fault in zip(capable, results, strict=True)
+            if fault is not None
+        }
+        if faults:
+            tracer.event(
+                "harness.robot_faulted",
+                trace_id=trace_id,
+                robot_ids=sorted(faults),
+                codes={rid: f.code for rid, f in sorted(faults.items())},
+            )
+        return faults
 
     async def refresh_taught_motions(self, trace_id: str = "") -> None:
         """Re-read every robot's taught-motion catalog from ``/health``.

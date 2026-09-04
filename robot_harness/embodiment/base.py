@@ -209,3 +209,39 @@ class SupportsTaughtMotions(Protocol):
     """
 
     async def taught_motions(self) -> list[dict[str, Any]]: ...
+
+
+class RobotFault(BaseModel):
+    """A latched fault an agent_server reports on ``/health`` (contract v0.2).
+
+    A body that stopped for a reason nobody has looked at — a safety or hardware
+    termination, an ``/abort``, or a restart with no clean shutdown behind it —
+    latches until an operator calls ``POST /reset`` on it. While latched it
+    advertises zero verbs, so the existing capability gate already stops the
+    fleet planning with it; this carries the *reason*, which that gate cannot.
+    """
+
+    robot_id: str = ""
+    code: str = ""
+    reason: str = ""
+    since_s: float = 0.0
+
+
+@runtime_checkable
+class SupportsFaultStatus(Protocol):
+    """Optional capability: a backend that reports a latched fault.
+
+    Split out from :class:`SupportsVerbs` for the same reason as
+    :class:`SupportsTaughtMotions`: widening a ``runtime_checkable`` Protocol
+    would silently reclassify every existing verb-capable backend as
+    non-conforming, and a v0.1 agent_server is a perfectly legal backend that
+    simply never reports one.
+
+    ``None`` means "no fault reported" — which covers both a healthy body and a
+    backend too old to say. Unlike ``available_verbs`` the two do NOT need to
+    stay distinguishable here: nothing is gated on this answer (capability
+    pruning still runs off the verb list), so a silent backend and a healthy one
+    lead to the same place — the Brain is told nothing extra.
+    """
+
+    async def fault_status(self) -> RobotFault | None: ...
