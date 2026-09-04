@@ -93,11 +93,16 @@ class _SafetyGatedTool:
     async def invoke(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         ctx = self._bind_task_context(ctx)
         if self._safety_gated:
-            cmd = self._registry.build_safety_command(self._tool.name, args, ctx)
-            if cmd is not None:
+            # Plural: one call may actuate a whole sequence (a taught motion),
+            # and every target must clear the envelope BEFORE the first moves.
+            cmds = self._registry.build_safety_commands(self._tool.name, args, ctx)
+            if cmds:
                 # SafetyEnvelopeViolation is NOT caught — the command was refused
                 # before dispatch; the violation propagates and aborts the task.
-                await self._envelope.check(cmd, trace_id=ctx.trace_id, subtask_id=ctx.subtask_id)
+                for cmd in cmds:
+                    await self._envelope.check(
+                        cmd, trace_id=ctx.trace_id, subtask_id=ctx.subtask_id
+                    )
             else:
                 # Hardware-bound but no harness-checkable target: honest "skipped"
                 # audit — never indistinguishable from "checked and passed".

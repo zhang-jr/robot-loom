@@ -1,0 +1,41 @@
+# Line endings: LF in the repo, and LF on checkout too.
+#
+# Relying on each machine's core.autocrlf left files with mixed endings on
+# Windows -- an editor writes CRLF, a script or tool writes LF. Git normalizes
+# such a file back to the identical blob on staging, but the size recorded in
+# the index no longer matches the file on disk, so the entry shows as modified
+# in `git status` while `git diff` prints nothing. Pinning the rule here takes
+# it out of local config.
+
+* text=auto eol=lf
+
+*.py    text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.toml  text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.json  text eol=lf
+*.lock  text eol=lf
+*.example text eol=lf
+
+# Must be checked out CRLF to be read correctly by Windows interpreters
+*.ps1   text eol=crlf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# Newline-sensitive Unix scripts: LF even when checked out on Windows
+*.sh    text eol=lf
+
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.pdf   binary
+*.npy   binary
+*.npz   binary
+*.pt    binary
+*.pth   binary
+*.onnx  binary
+*.bag   binary
+*.mcap  binary

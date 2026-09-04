@@ -17,6 +17,8 @@ Minimal subset:
     | move_to_pose      | "go to this pose, no vision needed"   | No         |
     | move_joints       | "drive the joints to this exact       | No         |
     |                   | configuration, joint-space direct"    |            |
+    | run_taught_motion | "run the waypoint sequence you were   | No         |
+    |                   | taught under this name"               |            |
     | locomote_to       | "drive the base to this goal pose"    | No         |
     | home              | "return to home configuration"        | Yes        |
 
@@ -58,6 +60,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from robot_harness.embodiment.base import EmbodimentCommand, SupportsVerbs
 from robot_harness.errors import HardwareNotReadyError, RobotOfflineError, ToolCancelledError
 from robot_harness.tools.base import ToolContext, ToolResult
+from robot_harness.tools.robot_sdk.taught_motion import TaughtMotionCatalog
 from robot_harness.tools.schema import ToolBackend, ToolSchema
 
 # ---------------------------------------------------------------------------
@@ -68,6 +71,7 @@ ROBOT_SDK_REACTIVE_GRASP = "robot_sdk.reactive_grasp"
 ROBOT_SDK_VISUAL_SERVO_TO = "robot_sdk.visual_servo_to"
 ROBOT_SDK_MOVE_TO_POSE = "robot_sdk.move_to_pose"
 ROBOT_SDK_MOVE_JOINTS = "robot_sdk.move_joints"
+ROBOT_SDK_RUN_TAUGHT_MOTION = "robot_sdk.run_taught_motion"
 ROBOT_SDK_LOCOMOTE_TO = "robot_sdk.locomote_to"
 ROBOT_SDK_HOME = "robot_sdk.home"
 
@@ -76,6 +80,7 @@ VERB_TOOL_NAMES: tuple[str, ...] = (
     ROBOT_SDK_VISUAL_SERVO_TO,
     ROBOT_SDK_MOVE_TO_POSE,
     ROBOT_SDK_MOVE_JOINTS,
+    ROBOT_SDK_RUN_TAUGHT_MOTION,
     ROBOT_SDK_LOCOMOTE_TO,
     ROBOT_SDK_HOME,
 )
@@ -695,7 +700,153 @@ class MoveJointsTool(_RobotSdkVerbTool):
 
 
 # ---------------------------------------------------------------------------
-# 5. home --------------------------------------------------------------------
+# 5. run_taught_motion -------------------------------------------------------
+# ---------------------------------------------------------------------------
+
+
+class RunTaughtMotionTool(_RobotSdkVerbTool):
+    """Run a joint-waypoint sequence that was taught on the robot, by name.
+
+    The counterpart to :class:`MoveJointsTool` for motions that are *fixed
+    site assets* rather than runtime decisions — a placement sequence onto a
+    tray, a stow path into a bin. Those were demonstrated once on a specific
+    body and stored on its agent_server; nothing about them is a planning
+    choice, so the Brain names one instead of re-emitting its joint angles.
+
+    Why this exists alongside ``move_joints``:
+
+    * **One call, whatever the point count.** The whole sequence — including
+      per-point gripper transitions — is one verb, so a four-point placement
+      costs one Brain turn instead of four.
+    * **The model never transcribes joint angles.** Copying high-precision
+      floats out of prompt prose is exactly the operation LLMs corrupt, and a
+      corrupted joint angle drives the arm into the table.
+    * **Re-teaching does not touch the harness.** Move the tray, re-demonstrate
+      on the robot; the catalog reloads and the name still resolves.
+
+    ``move_joints`` remains the right verb when the target configuration is
+    decided at call time. This one is strictly for what the body already knows.
+
+    Safety: the catalog carries every point, so :meth:`to_safety_commands`
+    hands the envelope the FULL trajectory before the first point moves — a
+    stricter gate than per-point dispatch, which can only refuse point 7 after
+    points 1-6 have already executed.
+    """
+
+    name = ROBOT_SDK_RUN_TAUGHT_MOTION
+
+    def __init__(
+        self,
+        adapters: dict[str, Any] | None = None,
+        catalog: TaughtMotionCatalog | None = None,
+    ) -> None:
+        super().__init__(adapters)
+        self._catalog = catalog if catalog is not None else TaughtMotionCatalog()
+
+    @property
+    def catalog(self) -> TaughtMotionCatalog:
+        return self._catalog
+
+    @property
+    def schema(self) -> ToolSchema:  # type: ignore[override]
+        """Built per access so a re-taught catalog is reflected without re-registering.
+
+        ``motion`` carries an ``enum`` of the fleet's known names, which makes
+        an invented name a schema violation the Brain is told to correct rather
+        than a round-trip to a robot that will reject it.
+        """
+        known = self._catalog.names()
+        motion_schema: dict[str, Any] = {
+            "type": "string",
+            "description": (
+                "Name of a motion taught on this robot. Available:\n"
+                + ("\n".join(f"  - {line}" for line in self._catalog.describe()) or "  (none)")
+            ),
+        }
+        if known:
+            motion_schema["enum"] = known
+        return ToolSchema(
+            name=ROBOT_SDK_RUN_TAUGHT_MOTION,
+            description=(
+                "Run a joint-waypoint sequence that was taught on the robot, by "
+                "name. Use this for fixed site motions (placing onto a known "
+                "tray, stowing into a known bin) — the robot holds the joint "
+                "angles and the gripper values, so pass only the name. Prefer "
+                "it over issuing the waypoints yourself: it is one call for the "
+                "whole sequence. For a joint configuration decided at call "
+                "time, use move_joints instead."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "robot_id": {"type": "string"},
+                    "motion": motion_schema,
+                    "constraints": _CONSTRAINTS_SCHEMA,
+                },
+                "required": ["robot_id", "motion"],
+            },
+            output_schema={
+                "type": "object",
+                "properties": {
+                    **COMPLETION_VERDICT_SCHEMA["properties"],
+                    "points_completed": {
+                        "type": "integer",
+                        "description": "How many waypoints of the sequence finished successfully.",
+                    },
+                    "points_total": {"type": "integer"},
+                    "failed_point_index": {
+                        "type": "integer",
+                        "description": (
+                            "0-based index of the waypoint that failed; absent on success. "
+                            "The arm HALTS there — remaining points are not attempted."
+                        ),
+                    },
+                    "final_joints": _JOINTS_SCHEMA,
+                    "residual_error_rad": {
+                        "type": "number",
+                        "description": "Worst-joint residual to the last attempted point, radians.",
+                    },
+                },
+                "required": COMPLETION_VERDICT_SCHEMA["required"],
+            },
+        )
+
+    def to_safety_commands(self, args: dict[str, Any], ctx: ToolContext) -> list[EmbodimentCommand]:
+        """Every joint target the named motion will drive through.
+
+        An empty list means the harness cannot check this call — either the name
+        is unknown to the addressed robot (the agent_server will reject it, so
+        nothing moves) or the catalog has not been discovered yet. The envelope
+        records that as an honest "skipped" audit; it never reads as "passed".
+        """
+        robot_id = args.get("robot_id", ctx.robot_id)
+        motion = self._catalog.get(robot_id, str(args.get("motion", "")))
+        if motion is None:
+            return []
+        return [
+            EmbodimentCommand(
+                robot_id=robot_id,
+                command_type="joint",
+                values=list(point.joints),
+            )
+            for point in motion.points
+        ]
+
+    async def _simulate(self, args: dict[str, Any], ctx: ToolContext) -> CompletionVerdict:
+        name = args.get("motion", "")
+        robot_id = args.get("robot_id", ctx.robot_id)
+        motion = self._catalog.get(robot_id, str(name))
+        total = len(motion.points) if motion is not None else 0
+        return CompletionVerdict(
+            outcome="success",
+            evidence=f"mock run_taught_motion '{name}' ({total} points)",
+            duration_s=2.5,
+            robot_state_snapshot={"robot_id": robot_id, "motion": name},
+        )
+
+
+# ---------------------------------------------------------------------------
+# 6. home --------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 
 
@@ -743,7 +894,7 @@ class HomeTool(_RobotSdkVerbTool):
 
 
 # ---------------------------------------------------------------------------
-# 6. locomote_to -------------------------------------------------------------
+# 7. locomote_to -------------------------------------------------------------
 # ---------------------------------------------------------------------------
 
 
@@ -854,18 +1005,26 @@ def unavailable_verb_tool_names(available_verbs: Collection[str] | None) -> froz
 
 def build_robot_sdk_verb_tools(
     adapters: dict[str, Any] | None = None,
+    taught_motions: TaughtMotionCatalog | None = None,
 ) -> list[_RobotSdkVerbTool]:
     """Build the minimal-subset on-robot verb tools.
 
     Pass ``adapters`` (robot_id → EmbodimentAdapter) to dispatch verbs to a live
     agent_server (e.g. a sim's ``/verb/{name}``) when the adapter supports verbs;
     omit it for simulated verdicts (harness end-to-end tests).
+
+    ``taught_motions`` is the shared catalog ``run_taught_motion`` reads for its
+    name enum and its safety commands; pass the same object the caller refreshes
+    from ``/health`` so a re-taught motion lands without rebuilding the registry.
+    An omitted catalog starts empty, which leaves ``run_taught_motion`` with no
+    valid input until discovery fills it (the verb gate prunes it meanwhile).
     """
     return [
         ReactiveGraspTool(adapters),
         VisualServoToTool(adapters),
         MoveToPoseTool(adapters),
         MoveJointsTool(adapters),
+        RunTaughtMotionTool(adapters, taught_motions),
         LocomoteToTool(adapters),
         HomeTool(adapters),
     ]
@@ -878,6 +1037,7 @@ __all__ = [
     "ROBOT_SDK_MOVE_JOINTS",
     "ROBOT_SDK_MOVE_TO_POSE",
     "ROBOT_SDK_REACTIVE_GRASP",
+    "ROBOT_SDK_RUN_TAUGHT_MOTION",
     "ROBOT_SDK_VISUAL_SERVO_TO",
     "VERB_TOOL_NAMES",
     "CompletionOutcome",
@@ -887,6 +1047,7 @@ __all__ = [
     "MoveJointsTool",
     "MoveToPoseTool",
     "ReactiveGraspTool",
+    "RunTaughtMotionTool",
     "VisualServoToTool",
     "build_robot_sdk_verb_tools",
     "unavailable_verb_tool_names",

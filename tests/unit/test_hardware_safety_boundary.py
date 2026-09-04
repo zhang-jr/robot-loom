@@ -53,12 +53,13 @@ def test_non_hardware_tool_is_not_gated() -> None:
 def test_move_to_pose_maps_to_cartesian_safety_command() -> None:
     reg = _registry()
     ctx = ToolContext.create(robot_id="robot-0")
-    cmd = reg.build_safety_command(
+    cmds = reg.build_safety_commands(
         ROBOT_SDK_MOVE_TO_POSE,
         {"robot_id": "robot-0", "target_pose": [0.4, 0.0, 0.3, 0.0, 0.0, 0.0]},
         ctx,
     )
-    assert cmd is not None
+    assert len(cmds) == 1
+    cmd = cmds[0]
     assert cmd.command_type == "cartesian"
     assert cmd.values[:3] == [0.4, 0.0, 0.3]
 
@@ -66,12 +67,13 @@ def test_move_to_pose_maps_to_cartesian_safety_command() -> None:
 def test_move_joints_maps_to_joint_safety_command() -> None:
     reg = _registry()
     ctx = ToolContext.create(robot_id="robot-0")
-    cmd = reg.build_safety_command(
+    cmds = reg.build_safety_commands(
         ROBOT_SDK_MOVE_JOINTS,
         {"robot_id": "robot-0", "target_joints": [0.0, 0.5, -0.5, 0.0, 1.0, 0.0]},
         ctx,
     )
-    assert cmd is not None
+    assert len(cmds) == 1
+    cmd = cmds[0]
     assert cmd.command_type == "joint"
     assert cmd.values == [0.0, 0.5, -0.5, 0.0, 1.0, 0.0]
 
@@ -81,12 +83,13 @@ async def test_move_joints_beyond_configured_limits_is_rejected() -> None:
     reg = _registry()
     env = SafetyEnvelope(SafetyConfig(joint_limits_rad=[3.14] * 6))
     ctx = ToolContext.create(robot_id="robot-0")
-    cmd = reg.build_safety_command(
+    cmds = reg.build_safety_commands(
         ROBOT_SDK_MOVE_JOINTS,
         {"robot_id": "robot-0", "target_joints": [0.0, 9.0, 0.0, 0.0, 0.0, 0.0]},
         ctx,
     )
-    assert cmd is not None
+    assert len(cmds) == 1
+    cmd = cmds[0]
     with pytest.raises(SafetyEnvelopeViolation):
         await env.check(cmd, trace_id="t", subtask_id="s")
 
@@ -96,12 +99,13 @@ async def test_verb_out_of_bounds_pose_is_rejected() -> None:
     reg = _registry()
     env = SafetyEnvelope(SafetyConfig())
     ctx = ToolContext.create(robot_id="robot-0")
-    cmd = reg.build_safety_command(
+    cmds = reg.build_safety_commands(
         ROBOT_SDK_MOVE_TO_POSE,
         {"robot_id": "robot-0", "target_pose": [99.0, 0.0, 0.3, 0.0, 0.0, 0.0]},
         ctx,
     )
-    assert cmd is not None
+    assert len(cmds) == 1
+    cmd = cmds[0]
     with pytest.raises(SafetyEnvelopeViolation):
         await env.check(cmd, trace_id="t", subtask_id="s")
 
@@ -111,12 +115,13 @@ async def test_verb_in_bounds_pose_passes() -> None:
     reg = _registry()
     env = SafetyEnvelope(SafetyConfig())
     ctx = ToolContext.create(robot_id="robot-0")
-    cmd = reg.build_safety_command(
+    cmds = reg.build_safety_commands(
         ROBOT_SDK_MOVE_TO_POSE,
         {"robot_id": "robot-0", "target_pose": [0.4, 0.0, 0.3, 0.0, 0.0, 0.0]},
         ctx,
     )
-    assert cmd is not None
+    assert len(cmds) == 1
+    cmd = cmds[0]
     verdict = await env.check(cmd, trace_id="t", subtask_id="s")
     assert verdict.passed
 

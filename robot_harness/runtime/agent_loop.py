@@ -30,6 +30,7 @@ from robot_harness.brain.prompt_assembly import workspace_prompt_overlay
 from robot_harness.critic.base import Critic, CriticVerdict
 from robot_harness.critic.heuristic_fallback import HeuristicCritic
 from robot_harness.critic.replan_policy import ReplanPolicy, SensorHeuristic
+from robot_harness.embodiment.base import RobotFault
 from robot_harness.errors import (
     BrainOutputInvalidError,
     ChannelError,
@@ -51,6 +52,7 @@ from robot_harness.runtime.skill_tools import SafetyGatedToolRegistry
 from robot_harness.skill.base import Skill, Subtask
 from robot_harness.tools.base import BrainProfile, ToolContext, ToolRegistry, ToolResult
 from robot_harness.tools.outbound import NullOutbound, OutboundHandle
+from robot_harness.tools.robot_sdk.verbs import ROBOT_SDK_RUN_TAUGHT_MOTION
 
 _SYSTEM_PROMPT = """\
 You are a robot task planner. You have access to tools that control robot hardware.
@@ -139,7 +141,15 @@ class AgentLoop:
         brain_profile = BrainProfile(name="openai")
         # Live-capability gate (ADR-019): tools no robot can currently run — and
         # skills requiring them — never enter the Brain's planning vocabulary.
+        # Refresh first: run_taught_motion's vocabulary IS its motion names, so
+        # the gate below can only judge it once discovery has run.
+        await self._ctx.refresh_taught_motions(trace_id)
         unavailable = await self._ctx.unavailable_tool_names(trace_id)
+        catalog = self._ctx.taught_motions
+        if catalog is None or catalog.is_empty():
+            # No robot advertises a taught motion — a verb whose only argument
+            # has no legal value must not appear in the Brain's vocabulary.
+            unavailable = unavailable | {ROBOT_SDK_RUN_TAUGHT_MOTION}
         tool_specs = self._ctx.tool_registry.export_for_brain(
             brain_profile, exclude_names=unavailable
         )
@@ -147,8 +157,12 @@ class AgentLoop:
             brain_profile, unavailable_tools=unavailable
         )
         all_tool_results: list[dict[str, Any]] = []
+        # A latched body advertises no verbs, so the gate above has already taken
+        # it out of the plan; this reads the reason so the opening turn can say
+        # WHY, instead of leaving the Brain to infer it from missing tools.
+        faults = await self._ctx.faulted_robots(trace_id)
         # The loop owns the conversation (ADR-025); it grows across turns.
-        messages = self._initial_messages(task, trace_id)
+        messages = self._initial_messages(task, trace_id, faults=faults)
         replan_count = 0
         ask_count = 0
         nudged = False
@@ -382,7 +396,12 @@ class AgentLoop:
     # Conversation helpers (native tool-use message protocol, ADR-025)
     # ------------------------------------------------------------------
 
-    def _initial_messages(self, task: Task, trace_id: str = "") -> list[Message]:
+    def _initial_messages(
+        self,
+        task: Task,
+        trace_id: str = "",
+        faults: dict[str, RobotFault] | None = None,
+    ) -> list[Message]:
         """Build the opening ``[system, user]`` conversation for a task.
 
         The system turn is the static harness prompt plus the workspace standing
@@ -394,6 +413,13 @@ class AgentLoop:
         fills ``robot_id`` args from what it reads, and without this line its only
         source is ROBOT.md prose — a stale workspace file then misaddresses every
         call.
+
+        ``faults`` (latched bodies, probed just above) rides in the *user* turn
+        for the same reason the assignment does: it is runtime state, and runtime
+        state does not belong in the standing context (see prompt_assembly). Told
+        here, the Brain knows a body is out of service before it plans; left out,
+        it either watches its tools vanish for no stated reason (single robot) or
+        keeps addressing a body that refuses every verb (fleet).
 
         Any cognitive scaffold (a plan/reflection set before the loop) is injected
         into the opening user turn. During the task, plan/reflection updates are
@@ -407,6 +433,9 @@ class AgentLoop:
         sections = [f"Task: {task.description}"]
         if task.robot_id:
             sections.append(f"Assigned robot: {task.robot_id}")
+        fault_notice = self._format_faults(task, faults or {})
+        if fault_notice:
+            sections.append(fault_notice)
         if task.constraints:
             sections.append(f"Constraints: {'; '.join(task.constraints)}")
         scaffold = self._ctx.format_scaffold_for_injection(task.robot_id)
@@ -416,6 +445,35 @@ class AgentLoop:
             {"role": "system", "content": system},
             {"role": "user", "content": "\n\n".join(sections)},
         ]
+
+    @staticmethod
+    def _format_faults(task: Task, faults: dict[str, RobotFault]) -> str:
+        """One paragraph naming every latched body, assigned one first.
+
+        States the remedy (an operator resets it) and forbids the failure mode
+        this exists to prevent: a Brain that reads "failed" as "try again" and
+        burns its turns re-dispatching at a body that refuses everything.
+        """
+        if not faults:
+            return ""
+        order = sorted(faults, key=lambda rid: (rid != task.robot_id, rid))
+        lines = []
+        for rid in order:
+            fault = faults[rid]
+            detail = f" ({fault.code}: {fault.reason})" if fault.reason else f" ({fault.code})"
+            lines.append(f"- {rid}{detail}")
+        assigned_is_down = task.robot_id in faults
+        head = (
+            "The robot assigned to this task is FAULTED and will refuse every verb:"
+            if assigned_is_down
+            else "These robots are FAULTED and will refuse every verb:"
+        )
+        tail = (
+            "Only a human operator can clear a fault (POST /reset on that robot). "
+            "Do not retry the verb and do not try another way to move that body — "
+            "say what is blocked and why, then stop."
+        )
+        return "\n".join([head, *lines, tail])
 
     @staticmethod
     def _assign_call_ids(decision: BrainDecision, turn: int) -> None:
@@ -842,13 +900,16 @@ class AgentLoop:
         # the task, and cancels the turn's sibling calls.
         registry = self._ctx.tool_registry
         if registry.requires_safety_check(req.tool_name):
-            cmd = registry.build_safety_command(req.tool_name, req.args, ctx)
-            if cmd is not None:
-                await self._ctx.safety_envelope.check(
-                    cmd,
-                    trace_id=ctx.trace_id,
-                    subtask_id=ctx.subtask_id,
-                )
+            # Plural: one call may actuate a whole sequence (a taught motion),
+            # and every target must clear the envelope BEFORE the first moves.
+            cmds = registry.build_safety_commands(req.tool_name, req.args, ctx)
+            if cmds:
+                for cmd in cmds:
+                    await self._ctx.safety_envelope.check(
+                        cmd,
+                        trace_id=ctx.trace_id,
+                        subtask_id=ctx.subtask_id,
+                    )
             else:
                 # Hardware-bound but no harness-checkable target (e.g. a phrase
                 # hint): honest "skipped" audit — never indistinguishable from

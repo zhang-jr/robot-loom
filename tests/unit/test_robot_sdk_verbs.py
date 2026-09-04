@@ -22,6 +22,7 @@ from robot_harness.tools.robot_sdk import (
     ROBOT_SDK_MOVE_JOINTS,
     ROBOT_SDK_MOVE_TO_POSE,
     ROBOT_SDK_REACTIVE_GRASP,
+    ROBOT_SDK_RUN_TAUGHT_MOTION,
     ROBOT_SDK_VISUAL_SERVO_TO,
     VERB_TOOL_NAMES,
     CompletionVerdict,
@@ -54,6 +55,7 @@ def test_factory_returns_all_verbs() -> None:
         ROBOT_SDK_VISUAL_SERVO_TO,
         ROBOT_SDK_MOVE_TO_POSE,
         ROBOT_SDK_MOVE_JOINTS,
+        ROBOT_SDK_RUN_TAUGHT_MOTION,
         ROBOT_SDK_LOCOMOTE_TO,
         ROBOT_SDK_HOME,
     }
@@ -91,6 +93,7 @@ def test_unavailable_verbs_excludes_unadvertised_only() -> None:
         ROBOT_SDK_VISUAL_SERVO_TO,
         ROBOT_SDK_MOVE_TO_POSE,
         ROBOT_SDK_MOVE_JOINTS,
+        ROBOT_SDK_RUN_TAUGHT_MOTION,
     }
 
 
